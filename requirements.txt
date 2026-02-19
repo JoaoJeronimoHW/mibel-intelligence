@@ -1,0 +1,30 @@
+# Core data processing
+duckdb==0.10.0           # Analytical database - why? See section 3
+pandas==2.2.0            # DataFrames for data manipulation
+numpy==1.26.3            # Numerical operations
+
+# Data sources
+OMIEData==0.4.0.0          # OMIE electricity market data
+entsoe-py==0.6.5         # ENTSO-E transparency platform API
+requests==2.31.0         # HTTP requests (for Open-Meteo)
+
+# Data validation and quality
+pytz==2024.1             # Timezone handling (critical for energy data!)
+python-dateutil==2.8.2   # Date parsing
+
+# Visualization
+matplotlib==3.8.2        # Plotting
+seaborn==0.13.1          # Statistical visualizations
+plotly==5.18.0           # Interactive plots
+
+# Jupyter
+jupyter==1.0.0           # Notebook environment
+ipykernel==6.29.0        # Jupyter kernel
+
+# Development tools
+black==24.1.1            # Code formatter
+ruff==0.1.14             # Fast linter
+python-dotenv==1.0.0     # Environment variables (for API keys)
+
+# Progress tracking
+tqdm==4.66.1             # Progress bars for long-running downloads

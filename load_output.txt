@@ -1,0 +1,12 @@
+================================================================================
+ LOADING ALL OMIE DATA (BULLETPROOF VERSION)
+================================================================================
+
+1. Clearing existing data...
+Traceback (most recent call last):
+  File "C:\Users\a7654\OneDrive\Ambiente de Trabalho\STUDY\projects\projects\mibel-intelligence\fix_midnight_hour.py", line 29, in <module>
+    print("   \u2713 Cleared")
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 3: character maps to <undefined>
