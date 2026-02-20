@@ -22,7 +22,6 @@ The pipeline ingests day-ahead prices, cross-border flows, generation mix, and w
 - [Example Usage](#example-usage)
 - [Extending the Pipeline](#extending-the-pipeline)
 - [Troubleshooting](#troubleshooting)
-- [License](#license)
 
 ---
 
@@ -357,8 +356,4 @@ plt.show()
 | OMIE HTTP 403 | Permission/rate-limit error | Wait 1 hour (rate limit resets), check [omie.es](https://www.omie.es) is up, add `time.sleep(5)` between requests. |
 | 30%+ NaN in panel prices | Missing data after merge | Re-run download for the failing country/date range. Verify all timestamps are UTC before merging. |
 
----
 
-## License
-
-[MIT](LICENSE) — or specify your preferred licence here.
