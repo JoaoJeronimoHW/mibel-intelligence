@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd C:\\\\Users\\\\a7654\\\\OneDrive\\\\Ambiente de Trabalho\\\\STUDY\\\\projects\\\\projects\\\\mibel-intelligence:*)",
+      "Bash(cd \"C:\\\\Users\\\\a7654\\\\OneDrive\\\\Ambiente de Trabalho\\\\STUDY\\\\projects\\\\projects\\\\mibel-intelligence\" && python fix_midnight_hour.py 2>&1)",
+      "Bash(cat:*)",
+      "Bash(del:*)"
+    ]
+  }
+}

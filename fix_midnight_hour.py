@@ -26,14 +26,14 @@ conn = get_connection(readonly=False)
 print("\n1. Clearing existing data...")
 conn.execute("DELETE FROM prices_day_ahead")
 conn.commit()
-print("   ✓ Cleared")
+print("   [OK] Cleared")
 
 # Load OMIE files
 raw_dir = Path("data/raw/omie")
 price_files = sorted(raw_dir.glob("day_ahead_prices_*.parquet"))
 
 if not price_files:
-    print("\n❌ No OMIE files found!")
+    print("\n[ERROR] No OMIE files found!")
     sys.exit(1)
 
 print(f"\n2. Found {len(price_files)} OMIE files")
@@ -67,9 +67,8 @@ for file_idx, file in enumerate(price_files, 1):
                     timestamp = pd.Timestamp(f"{base_date} {hour_of_day:02d}:00:00", tz='UTC')
                     price = float(row[hour_col])
                     
-                    # INSERT OR REPLACE - will overwrite if duplicate
                     conn.execute("""
-                        INSERT OR REPLACE INTO prices_day_ahead 
+                        INSERT OR IGNORE INTO prices_day_ahead
                         (timestamp, country, price_eur_mwh, energy_mwh)
                         VALUES (?, ?, ?, ?)
                     """, [timestamp, 'ES', price, None])
@@ -90,7 +89,7 @@ for file_idx, file in enumerate(price_files, 1):
                     price = float(row[hour_col])
                     
                     conn.execute("""
-                        INSERT OR REPLACE INTO prices_day_ahead 
+                        INSERT OR IGNORE INTO prices_day_ahead
                         (timestamp, country, price_eur_mwh, energy_mwh)
                         VALUES (?, ?, ?, ?)
                     """, [timestamp, 'PT', price, None])
@@ -101,10 +100,10 @@ for file_idx, file in enumerate(price_files, 1):
         conn.commit()
         total_inserted += rows_processed
         
-        print(f"     ✓ Processed {rows_processed} rows")
+        print(f"     [OK] Processed {rows_processed} rows")
         
     except Exception as e:
-        print(f"     ❌ Error: {e}")
+        print(f"     [ERROR] Error: {e}")
         import traceback
         traceback.print_exc()
         continue
@@ -137,10 +136,10 @@ dups = conn.execute("""
 """).fetchdf()
 
 if len(dups) > 0:
-    print(f"\n   ⚠️ Still have {len(dups)} duplicates (this shouldn't happen!):")
+    print(f"\n   [WARN] Still have {len(dups)} duplicates (this shouldn't happen!):")
     print(dups)
 else:
-    print(f"\n   ✅ No duplicates in database")
+    print(f"\n   [OK] No duplicates in database")
 
 conn.close()
 
