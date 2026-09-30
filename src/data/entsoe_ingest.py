@@ -20,12 +20,11 @@ import pandas as pd
 from pathlib import Path
 import logging
 from typing import List
-from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 import time
 
-from entsoe import EntsoePandasClient, EntsoeRawClient
+from entsoe import EntsoePandasClient
 from entsoe.exceptions import NoMatchingDataError
-from entsoe.series_parsers import _parse_timeseries_generic_whole
 
 # Load environment variables (for API key)
 from dotenv import load_dotenv
@@ -199,13 +198,10 @@ def download_cross_border_flows(country_from: str,
     client = client or get_entsoe_client()
     start, end = _request_bounds(start_date, end_date)
 
-    # ENTSO-E now sends flows as curve type A03, which omits positions whose
-    # value repeats the previous one. entsoe-py 0.6.5's flow parser assumes
-    # every position is present and fails with "Length mismatch", so fetch the
-    # raw XML and use the library's generic parser, which forward-fills A03.
-    raw_client = EntsoeRawClient(api_key=client.api_key)
+    # ENTSO-E sends flows as curve type A03 (repeated values omitted), which
+    # entsoe-py < 0.8 could not parse ("Length mismatch"); 0.8.1 is pinned.
     try:
-        xml = raw_client.query_crossborder_flows(
+        flows = client.query_crossborder_flows(
             country_code_from=country_from,
             country_code_to=country_to,
             start=start,
@@ -215,7 +211,6 @@ def download_cross_border_flows(country_from: str,
         logger.warning(f"No flow data for {country_from}->{country_to}")
         return pd.DataFrame()
 
-    flows = _parse_timeseries_generic_whole(xml, label='quantity')
     flows = flows[(flows.index >= start) & (flows.index < end)]
     df = flows.rename('flow_mw').rename_axis('timestamp').reset_index()
 
@@ -262,11 +257,17 @@ def download_generation_by_country(country_code: str,
     return df
 
 
+# Requests are mostly server wait time (~5 s each), so a few run in parallel.
+# 4 workers stays far below ENTSO-E's limit of 400 requests per minute.
+MAX_WORKERS = 4
+
+
 def _download_chunked(fetch, start_date: str, end_date: str, chunk_months: int,
                       label: str, failed: list) -> pd.DataFrame:
     """Run fetch(chunk_start, chunk_end) per chunk; log and continue on failure."""
     parts = []
-    for chunk_start, chunk_end in _chunks(start_date, end_date, chunk_months):
+    chunks = list(_chunks(start_date, end_date, chunk_months))
+    for i, (chunk_start, chunk_end) in enumerate(chunks):
         try:
             df = fetch(chunk_start, chunk_end)
             if not df.empty:
@@ -274,9 +275,17 @@ def _download_chunked(fetch, start_date: str, end_date: str, chunk_months: int,
         except Exception as e:
             logger.error(f"Failed chunk {chunk_start}..{chunk_end} for {label}: {e}")
             failed.append((label, chunk_start))
-        # Rate limiting: wait between requests
-        time.sleep(1)
+        # Rate limiting: pause between consecutive requests of the same series
+        if i < len(chunks) - 1:
+            time.sleep(1)
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+def _parallel(tasks: dict) -> dict:
+    """Run {label: zero-arg function} on a small thread pool; returns {label: result}."""
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {label: pool.submit(fn) for label, fn in tasks.items()}
+        return {label: future.result() for label, future in futures.items()}
 
 
 def download_all_countries_prices(country_codes: List[str],
@@ -287,8 +296,8 @@ def download_all_countries_prices(country_codes: List[str],
     """
     Download prices for multiple countries, handling rate limits.
 
-    ENTSO-E API has rate limits (~400 requests/minute).
-    We chunk by time and add delays to avoid getting blocked.
+    Countries are fetched in parallel (MAX_WORKERS); within a country, time
+    chunks are fetched one after another with a pause in between.
 
     Args:
         country_codes: List of country codes to download
@@ -302,25 +311,26 @@ def download_all_countries_prices(country_codes: List[str],
     """
     logger.info(f"Downloading prices for {len(country_codes)} countries")
 
-    client = get_entsoe_client()
+    get_entsoe_client()  # fail fast if the API key is missing
     failed = failed if failed is not None else []
-    all_data = []
 
-    for country in tqdm(country_codes, desc="Countries"):
-        country_df = _download_chunked(
+    def fetch_country(country):
+        client = get_entsoe_client()  # one client (HTTP session) per thread
+        return _download_chunked(
             lambda s, e: download_day_ahead_prices(country, s, e, client=client),
             start_date, end_date, chunk_months, f"prices {country}", failed)
 
-        if not country_df.empty:
-            all_data.append(country_df)
-            # Save individual country file (the unit the loader reads)
-            output_file = RAW_DIR / f"prices_{country}_{start_date}_{end_date}.parquet"
-            country_df.to_parquet(output_file, compression='snappy', index=False)
-        else:
-            logger.error(f"No prices downloaded for {country}")
+    results = _parallel({c: (lambda c=c: fetch_country(c)) for c in country_codes})
 
-        # Longer pause between countries to be extra safe
-        time.sleep(2)
+    all_data = []
+    for country, country_df in results.items():
+        if country_df.empty:
+            logger.error(f"No prices downloaded for {country}")
+            continue
+        all_data.append(country_df)
+        # Save individual country file (the unit the loader reads)
+        output_file = RAW_DIR / f"prices_{country}_{start_date}_{end_date}.parquet"
+        country_df.to_parquet(output_file, compression='snappy', index=False)
 
     if not all_data:
         return pd.DataFrame()
@@ -337,16 +347,20 @@ def download_all_countries_prices(country_codes: List[str],
 
 def download_all_flows(start_date: str, end_date: str, chunk_months: int = 3,
                        failed: list = None) -> pd.DataFrame:
-    """Download every directed pair in FLOW_PAIRS, one raw file per pair."""
-    client = get_entsoe_client()
+    """Download every directed pair in FLOW_PAIRS (in parallel), one raw file per pair."""
+    get_entsoe_client()  # fail fast if the API key is missing
     failed = failed if failed is not None else []
-    all_flows = []
 
-    for country_from, country_to in FLOW_PAIRS:
-        pair_df = _download_chunked(
+    def fetch_pair(country_from, country_to):
+        client = get_entsoe_client()
+        return _download_chunked(
             lambda s, e: download_cross_border_flows(country_from, country_to, s, e, client=client),
             start_date, end_date, chunk_months, f"flows {country_from}->{country_to}", failed)
 
+    results = _parallel({pair: (lambda pair=pair: fetch_pair(*pair)) for pair in FLOW_PAIRS})
+
+    all_flows = []
+    for (country_from, country_to), pair_df in results.items():
         if pair_df.empty:
             logger.error(f"No flows downloaded for {country_from}->{country_to}")
             continue

@@ -105,6 +105,33 @@ def omie_hours_to_utc(dates: pd.Series, hour_numbers: pd.Series) -> pd.Series:
     return result.dt.tz_convert(UTC)
 
 
+def omie_periods_to_utc(dates: pd.Series, periods: pd.Series,
+                        periods_per_day: pd.Series) -> pd.Series:
+    """
+    Generalisation of omie_hours_to_utc for any market time unit.
+
+    OMIE numbers the periods of a market day sequentially from 1. Since
+    2025-10-01 a day has 96 quarter-hours (92/100 on DST days); before that
+    it had 24 hours (23/25). The period length is the day's real length
+    divided by its number of periods, so both formats map exactly.
+
+    Returns:
+        Series of tz-aware UTC timestamps (period start)
+    """
+    dates = pd.Series(dates).reset_index(drop=True)
+    periods = pd.Series(periods).reset_index(drop=True).astype(int)
+    n = pd.Series(periods_per_day).reset_index(drop=True).astype(int)
+    minutes_per_period = hours_in_market_day(dates).reset_index(drop=True) * 60 / n
+    bad = minutes_per_period.isin([15, 60]) == False  # noqa: E712
+    if bad.any():
+        raise ValueError(f"{int(bad.sum())} rows have a period count that fits neither "
+                         f"hourly nor 15-minute periods, e.g. {dates[bad].iloc[0]} "
+                         f"with {n[bad].iloc[0]} periods")
+    start_of_day = omie_hours_to_utc(dates, pd.Series(1, index=dates.index))
+    offsets = pd.to_timedelta((periods - 1) * minutes_per_period, unit='min')
+    return start_of_day + offsets
+
+
 def hours_in_market_day(dates: pd.Series) -> pd.Series:
     """Number of hours in each market day (23, 24 or 25 in Iberia)."""
     days = pd.DatetimeIndex(pd.to_datetime(pd.Series(dates)).dt.normalize())

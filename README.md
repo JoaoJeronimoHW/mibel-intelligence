@@ -96,6 +96,21 @@ mibel-intelligence/
 
 ## Quickstart
 
+> **One command for recent data.** After setup (steps 1–2), from `cmd` in the project folder:
+>
+> ```bat
+> mibel 30                        :: last 30 complete market days (ending yesterday)
+> mibel 7 --end 2026-09-15        :: 7 days ending on a given day
+> mibel 90 --skip entsoe          :: skip a source (omie, entsoe, weather)
+> ```
+>
+> This downloads OMIE, ENTSO-E and Open-Meteo for the window, reloads the database and writes
+> `data/processed/main_panel_<start>_<end>.parquet`. It is the same as `python -m src.pipeline 30`
+> on any OS. A 30-day run takes about 1–2 minutes, mostly ENTSO-E server time. OMIE daily files
+> are cached, so re-runs skip them. Since 2025-10-01 the day-ahead market clears in 15-minute
+> periods; OMIE and ENTSO-E prices from then on are averaged to hourly for the panel, and the
+> raw 15-minute files are kept in `data/raw/`.
+
 ### 1. Clone and Set Up the Environment
 
 ```bash

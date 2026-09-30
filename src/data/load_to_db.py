@@ -24,6 +24,7 @@ from src.utils.db_utils import get_connection
 from src.utils.db_schema import create_schema
 from src.utils.timezone_utils import (
     omie_hours_to_utc,
+    omie_periods_to_utc,
     hours_in_market_day,
     assert_utc_hourly,
     normalize_to_utc,
@@ -35,6 +36,8 @@ logger = logging.getLogger(__name__)
 RAW_DIR = Path(__file__).parent.parent.parent / "data" / "raw"
 
 OMIE_CONCEPTS = {'PRICE_SP': 'ES', 'PRICE_PT': 'PT'}
+# First market day with 15-minute periods (see src/data/omie_ingest.py)
+QUARTER_HOUR_START = pd.Timestamp('2025-10-01')
 
 WEATHER_COLUMNS = [
     'timestamp', 'location', 'latitude', 'longitude', 'temperature_c',
@@ -52,6 +55,12 @@ FLOW_KEYS = ['timestamp', 'country_from', 'country_to']
 def _raw_files(directory: Path, pattern: str) -> list:
     """Per-unit raw files only: combined files ('*_all_*') are never loaded."""
     return sorted(f for f in directory.glob(pattern) if '_all_' not in f.name)
+
+
+def _concat_latest_last(files: list) -> pd.DataFrame:
+    """Concatenate raw files oldest-first, so keep='last' dedup prefers the newest."""
+    ordered = sorted(files, key=lambda f: f.stat().st_mtime)
+    return pd.concat([pd.read_parquet(f) for f in ordered], ignore_index=True)
 
 
 def _replace_rows(conn, table: str, columns: list, keys: list, df: pd.DataFrame,
@@ -119,24 +128,71 @@ def omie_wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
     })
 
 
+def read_marginal_price_file(path: Path) -> pd.DataFrame:
+    """
+    Parse one OMIE daily file (marginalpdbc_YYYYMMDD.1) to long UTC prices at
+    the file's own resolution: hourly before 2025-10-01, 15-minute after.
+    Line format: year;month;day;period;price_PT;price_ES;
+    """
+    rows = [line.split(';')[:6] for line in path.read_text(encoding='latin-1').splitlines()
+            if line[:1].isdigit()]
+    raw = pd.DataFrame(rows, columns=['year', 'month', 'day', 'period', 'PT', 'ES'])
+    dates = pd.to_datetime(raw[['year', 'month', 'day']].astype(int))
+    periods = raw['period'].astype(int)
+    per_day = periods.groupby(dates).transform('count')
+    timestamps = omie_periods_to_utc(dates, periods, per_day)
+    return pd.concat([
+        pd.DataFrame({'timestamp': timestamps, 'country': country,
+                      'price_eur_mwh': raw[country].astype(float)})
+        for country in ['ES', 'PT']
+    ], ignore_index=True)
+
+
+def to_hourly(df: pd.DataFrame, keys: list, value: str) -> pd.DataFrame:
+    """Average sub-hourly values to hourly (the panel's time unit)."""
+    return (df.groupby(keys + [df['timestamp'].dt.floor('h')])[value].mean()
+              .reset_index())
+
+
 def load_omie_prices(conn):
     """
     Load OMIE day-ahead prices into database.
 
-    OMIE data comes in WIDE format (H1, H2, H3... columns).
-    We transform to LONG format, in UTC, for the database.
+    Two raw formats:
+    - day_ahead_prices_*.parquet from the OMIEData library: WIDE (H1..H25),
+      hourly, only trusted before 2025-10-01 (the library cannot read the
+      15-minute files after that)
+    - marginalpdbc/marginalpdbc_*.1, OMIE's own daily files: hourly or
+      15-minute periods, averaged here to hourly
+    Both become LONG hourly UTC rows.
     """
     logger.info("Loading OMIE prices...")
 
     omie_dir = RAW_DIR / "omie"
     price_files = _raw_files(omie_dir, "day_ahead_prices_*.parquet") if omie_dir.exists() else []
+    daily_dir = omie_dir / "marginalpdbc"
+    daily_files = sorted(daily_dir.glob("marginalpdbc_*.1")) if daily_dir.exists() else []
 
-    if not price_files:
+    if not price_files and not daily_files:
         logger.warning(f"No OMIE price files found in {omie_dir}")
         return
 
-    frames = [omie_wide_to_long(pd.read_parquet(f)) for f in price_files]
+    frames = []
+    for f in price_files:
+        raw = pd.read_parquet(f)
+        too_new = pd.to_datetime(raw['DATE']) >= QUARTER_HOUR_START
+        if too_new.any():
+            logger.warning(f"  {f.name}: ignoring {too_new.sum()} rows on/after "
+                           f"{QUARTER_HOUR_START.date()} (15-minute days the library misreads)")
+        frames.append(omie_wide_to_long(raw[~too_new]))
+    if daily_files:
+        daily = pd.concat([read_marginal_price_file(f) for f in daily_files], ignore_index=True)
+        daily = to_hourly(daily, ['country'], 'price_eur_mwh')
+        daily['energy_mwh'] = float('nan')
+        frames.append(daily)
     df_long = pd.concat(frames, ignore_index=True)
+    # Both sources can cover the same hourly day; they must agree
+    df_long['price_eur_mwh'] = df_long['price_eur_mwh'].round(6)
 
     # Chunk files can overlap at their boundaries. Identical rows are expected;
     # a conflicting price for the same hour is a data problem and must be loud.
@@ -150,7 +206,8 @@ def load_omie_prices(conn):
     _replace_rows(conn, 'prices_day_ahead', PRICE_COLUMNS, PRICE_KEYS, df_long,
                   "t.country IN ('ES', 'PT')")
 
-    logger.info(f"  [OK] Loaded {len(df_long):,} OMIE price records from {len(price_files)} files")
+    logger.info(f"  [OK] Loaded {len(df_long):,} OMIE price records from "
+                f"{len(price_files)} library files and {len(daily_files)} daily files")
 
 
 def load_entsoe_prices(conn):
@@ -164,12 +221,13 @@ def load_entsoe_prices(conn):
         logger.warning(f"No ENTSO-E price files found in {entsoe_dir}")
         return
 
-    df = pd.concat([pd.read_parquet(f) for f in price_files], ignore_index=True)
+    df = _concat_latest_last(price_files)
     df = normalize_to_utc(df)
     df = df.dropna(subset=['price_eur_mwh'])
-    # ENTSO-E can publish sub-hourly resolution for some zones; the panel is hourly
-    df = (df.groupby(['country', df['timestamp'].dt.floor('h')])['price_eur_mwh'].mean()
-            .reset_index())
+    # Overlapping download windows: the most recently written file wins
+    df = df.drop_duplicates(subset=['country', 'timestamp'], keep='last')
+    # 15-minute resolution since 2025-10-01 (and some zones earlier); the panel is hourly
+    df = to_hourly(df, ['country'], 'price_eur_mwh')
     df['energy_mwh'] = float('nan')
     assert_utc_hourly(df, group_col='country')
 
@@ -192,12 +250,12 @@ def load_weather_data(conn):
         logger.warning(f"No weather files found in {weather_dir}")
         return
 
-    df = pd.concat([pd.read_parquet(f) for f in weather_files], ignore_index=True)
+    df = _concat_latest_last(weather_files)
     # Open-Meteo is requested with timezone=UTC; raw files written before the
     # D-01 fix hold that UTC as tz-naive values, which normalize_to_utc assumes
     df = normalize_to_utc(df)
-    # Yearly chunks share their boundary day
-    df = df.drop_duplicates(subset=['timestamp', 'location'])
+    # Overlapping download windows: the most recently written file wins
+    df = df.drop_duplicates(subset=['timestamp', 'location'], keep='last')
     assert_utc_hourly(df, group_col='location')
 
     _replace_rows(conn, 'weather', WEATHER_COLUMNS, WEATHER_KEYS, df)
@@ -216,13 +274,14 @@ def load_cross_border_flows(conn):
         logger.warning(f"No cross-border flow files found in {entsoe_dir}")
         return
 
-    df = pd.concat([pd.read_parquet(f) for f in flow_files], ignore_index=True)
+    df = _concat_latest_last(flow_files)
     df = df.rename(columns={'from_country': 'country_from', 'to_country': 'country_to'})
     df = normalize_to_utc(df)
     df = df.dropna(subset=['flow_mw'])
+    # Overlapping download windows: the most recently written file wins
+    df = df.drop_duplicates(subset=['country_from', 'country_to', 'timestamp'], keep='last')
     # Hourly resolution, one row per directed pair and hour
-    df = (df.groupby(['country_from', 'country_to', df['timestamp'].dt.floor('h')])['flow_mw']
-            .mean().reset_index())
+    df = to_hourly(df, ['country_from', 'country_to'], 'flow_mw')
     assert_utc_hourly(df.assign(pair=df['country_from'] + df['country_to']), group_col='pair')
 
     _replace_rows(conn, 'cross_border_flows', FLOW_COLUMNS, FLOW_KEYS, df)

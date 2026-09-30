@@ -17,7 +17,13 @@ python create_env.py             # Interactive script to set ENTSOE_API_KEY in .
 
 ## Commands
 
-### Run the pipeline (in order)
+### Run the pipeline
+
+```bash
+python -m src.pipeline 30              # Last 30 days end to end (Windows: mibel 30)
+```
+
+Or stage by stage, in order:
 
 ```bash
 python -m src.data.omie_ingest        # Download OMIE prices 2022-2023 (no API key; --bid-curves sample|full --yes)

@@ -74,6 +74,76 @@ def download_day_ahead_prices(start_date: str, end_date: str) -> pd.DataFrame:
         raise
 
 
+# --- Direct daily files ------------------------------------------------------
+# From market day 2025-10-01 the day-ahead market clears in 15-minute periods
+# (96 per day, 92/100 on DST days). OMIEData 0.4 assumes at most 25 hourly
+# columns and silently truncates those days, so recent data is fetched as
+# OMIE's own daily files instead: marginalpdbc_YYYYMMDD.1, one line per period:
+#   year;month;day;period;price_PT;price_ES;
+# (column order verified against ENTSO-E's PT and ES series on split days).
+QUARTER_HOUR_START = pd.Timestamp('2025-10-01')
+MARGINAL_DIR = RAW_DIR / "marginalpdbc"
+MARGINAL_URL = ("https://www.omie.es/es/file-download?parents=marginalpdbc"
+                "&filename=marginalpdbc_{day:%Y%m%d}.1")
+
+
+def _fetch_marginal_file(day: pd.Timestamp, refresh: bool = False) -> bool:
+    """Download one daily file into MARGINAL_DIR. Returns False if OMIE has none."""
+    import requests
+
+    target = MARGINAL_DIR / f"marginalpdbc_{day:%Y%m%d}.1"
+    if target.exists() and not refresh:
+        return True  # past market results do not change; keep the raw bytes
+    response = requests.get(MARGINAL_URL.format(day=day), timeout=30)
+    response.raise_for_status()
+    # A missing file comes back as an HTML page, not a 404
+    if not response.text.startswith('MARGINALPDBC'):
+        return False
+    target.write_bytes(response.content)
+    return True
+
+
+def download_marginal_price_files(start_date: str, end_date: str,
+                                  refresh: bool = False, workers: int = 8) -> list:
+    """
+    Fetch OMIE's daily marginal-price files for [start_date, end_date] in
+    parallel, caching them under data/raw/omie/marginalpdbc/.
+
+    Returns:
+        list of days (Timestamps) OMIE does not serve as daily files
+        (older dates are only available through the OMIEData library)
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    MARGINAL_DIR.mkdir(parents=True, exist_ok=True)
+    days = list(pd.date_range(start_date, end_date, freq='D'))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        found = list(pool.map(lambda d: _fetch_marginal_file(d, refresh), days))
+    missing = [d for d, ok in zip(days, found) if not ok]
+    logger.info(f"OMIE daily files: {len(days) - len(missing)}/{len(days)} available "
+                f"in {MARGINAL_DIR}")
+    return missing
+
+
+def download_prices(start_date: str, end_date: str, refresh: bool = False) -> None:
+    """
+    Get OMIE day-ahead prices for any window, choosing the right source per day:
+    direct daily files where OMIE serves them (fast, cached, both hourly and
+    15-minute formats), the OMIEData library for older days it does not.
+    """
+    missing = download_marginal_price_files(start_date, end_date, refresh=refresh)
+    if not missing:
+        return
+    recent = [d for d in missing if d >= QUARTER_HOUR_START]
+    if recent:
+        # The library cannot parse 15-minute days, so there is no fallback
+        raise RuntimeError(f"OMIE has no daily file for {len(recent)} day(s), e.g. "
+                           f"{recent[0].date()} (not yet published?)")
+    logger.info(f"Falling back to OMIEData for {len(missing)} older day(s)")
+    download_day_ahead_prices(min(missing).strftime('%Y-%m-%d'),
+                              max(missing).strftime('%Y-%m-%d'))
+
+
 def download_generation_by_technology(start_date: str, end_date: str) -> pd.DataFrame:
     """
     Download hourly generation breakdown by technology (wind, solar, gas, hydro, etc.)

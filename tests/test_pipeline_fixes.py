@@ -168,3 +168,62 @@ def test_feature_engineering_survives_empty_weather_and_keeps_countries_apart():
 
     with pytest.raises(ValueError):
         fe.create_all_features(panel.head(100))
+
+
+# OMIE daily files (hourly before 2025-10-01, 15-minute after) ---------------
+
+def marginal_file(tmp_path, day: date, n_periods: int, split_at: int = None):
+    """OMIE-format daily file; ES price = period, PT = period (+100 if split)."""
+    lines = ['MARGINALPDBC;']
+    for p in range(1, n_periods + 1):
+        pt = p + (100 if split_at and p >= split_at else 0)
+        lines.append(f"{day:%Y;%m;%d};{p};{pt};{p};")
+    lines.append('*')
+    path = tmp_path / 'raw' / 'omie' / 'marginalpdbc' / f"marginalpdbc_{day:%Y%m%d}.1"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('\n'.join(lines))
+    return path
+
+
+@pytest.mark.parametrize('day, n_periods, hours', [
+    (date(2025, 6, 15), 24, 24),    # hourly
+    (date(2026, 9, 27), 96, 24),    # quarter-hourly
+    (date(2026, 3, 29), 92, 23),    # quarter-hourly, spring DST
+    (date(2025, 10, 26), 100, 25),  # quarter-hourly, autumn DST
+])
+def test_daily_files_map_periods_to_utc_and_average_to_hours(isolated_data, day, n_periods, hours):
+    path = marginal_file(isolated_data, day, n_periods, split_at=3)
+    long = load_to_db.read_marginal_price_file(path)
+    es = long[long['country'] == 'ES'].reset_index(drop=True)
+
+    first_utc, next_day_utc = market_window_utc(str(day), str(day))
+    assert es['timestamp'].iloc[0] == first_utc
+    step = (next_day_utc - first_utc) / n_periods
+    assert step in (pd.Timedelta(minutes=15), pd.Timedelta(hours=1))
+    assert es['timestamp'].iloc[-1] == next_day_utc - step
+    # Column 5 is Portugal, column 6 is Spain
+    pt = long[long['country'] == 'PT'].reset_index(drop=True)
+    assert pt['price_eur_mwh'].iloc[-1] == es['price_eur_mwh'].iloc[-1] + 100
+
+    hourly = load_to_db.to_hourly(long, ['country'], 'price_eur_mwh')
+    assert (hourly['country'] == 'ES').sum() == hours
+    if n_periods > 25:  # first hour = mean of quarter-hours 1..4
+        assert hourly[hourly['country'] == 'ES']['price_eur_mwh'].iloc[0] == 2.5
+
+
+def test_library_rows_after_quarter_hour_switch_are_ignored(isolated_data):
+    # A library parquet for a 15-minute day holds truncated garbage; the daily file wins
+    write_raw(isolated_data, 'omie/day_ahead_prices_x.parquet', omie_raw({date(2026, 9, 27): 24}))
+    marginal_file(isolated_data, date(2026, 9, 27), 96)
+    load_to_db.load_all_data()
+    es = db_utils.execute_query(
+        "SELECT price_eur_mwh FROM prices_day_ahead WHERE country = 'ES' ORDER BY timestamp")
+    assert len(es) == 24 and es['price_eur_mwh'].iloc[0] == 2.5
+
+
+def test_pipeline_window_counts_inclusive_market_days():
+    from src.pipeline import market_window
+    assert market_window(7, end='2026-09-15') == ('2026-09-09', '2026-09-15')
+    assert market_window(1, end='2026-09-15') == ('2026-09-15', '2026-09-15')
+    with pytest.raises(ValueError):
+        market_window(0)

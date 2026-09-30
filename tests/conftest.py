@@ -41,6 +41,8 @@ def isolated_data(tmp_path, monkeypatch):
         monkeypatch.setattr(module, 'RAW_DIR', raw / sub)
         if hasattr(module, 'COMBINED_DIR'):
             monkeypatch.setattr(module, 'COMBINED_DIR', raw / sub / 'combined')
+        if hasattr(module, 'MARGINAL_DIR'):
+            monkeypatch.setattr(module, 'MARGINAL_DIR', raw / sub / 'marginalpdbc')
 
     from src.data import load_to_db, build_panel
     monkeypatch.setattr(load_to_db, 'RAW_DIR', raw)

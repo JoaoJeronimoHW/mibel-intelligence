@@ -5,7 +5,7 @@ numpy==1.26.3            # Numerical operations
 
 # Data sources
 OMIEData==0.4.0.0          # OMIE electricity market data
-entsoe-py==0.6.5         # ENTSO-E transparency platform API
+entsoe-py==0.8.1         # ENTSO-E transparency platform API (>=0.8 parses 15-min and A03 series)
 requests==2.31.0         # HTTP requests (for Open-Meteo)
 
 # Data validation and quality
