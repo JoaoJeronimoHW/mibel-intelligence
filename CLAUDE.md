@@ -76,7 +76,7 @@ Key column: `is_iberian_exception` (binary flag for policy analysis)
 |--------|-----------|--------------|
 | OMIE | Spain, Portugal | No |
 | ENTSO-E | 12 donor countries + ES/PT/FR flows | Yes (register at transparency.entsoe.eu) |
-| Open-Meteo | 7 Iberian locations | No |
+| Open-Meteo | 65 locations across the 8 panel countries (`src/data/weather_locations.py`) | No |
 
 ### Key design decisions
 
@@ -84,4 +84,4 @@ Key column: `is_iberian_exception` (binary flag for policy analysis)
 - **Gapless index first**: `create_hour_index()` builds the complete time skeleton; data is left-joined onto it so missing hours become explicit NaN rather than dropped rows
 - **DuckDB**: columnar, serverless (single file), native Pandas integration — chosen for 50M+ row bid curve aggregations
 - **Bid curves are optional**: `download_all_bid_curves()` takes ~24 hours; use `download_bid_curves_sample()` for testing
-- **Weather aggregated to country level**: Spain = Madrid + Barcelona + Seville + Bilbao; Portugal = Lisbon + Porto + Faro
+- **Weather aggregated to country level**: levels = unweighted mean of each country's `main` cities; dispersion (`<var>_sd`, `<var>_range`) = across all its `main` + `reference` cities

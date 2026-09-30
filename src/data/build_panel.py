@@ -23,6 +23,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 
+from src.data.weather_locations import LOCATIONS as WEATHER_LOCATIONS
 from src.utils.db_utils import execute_query
 from src.utils.timezone_utils import (
     create_hour_index,
@@ -39,12 +40,10 @@ PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_COUNTRIES = ['ES', 'PT', 'FR', 'DE', 'IT', 'NL', 'BE', 'AT']
 
 WEATHER_VARIABLES = ['temperature_c', 'wind_speed_100m', 'solar_radiation', 'dni', 'cloud_cover']
-
-# Country-level weather is the unweighted mean of these locations
-WEATHER_LOCATIONS = {
-    'ES': ['Madrid', 'Barcelona', 'Seville', 'Bilbao'],
-    'PT': ['Lisbon', 'Porto', 'Faro'],
-}
+# Panel column order: levels, then dispersion (sd, range) per variable
+WEATHER_COLUMNS = (WEATHER_VARIABLES
+                   + [f'{v}_sd' for v in WEATHER_VARIABLES]
+                   + [f'{v}_range' for v in WEATHER_VARIABLES])
 
 
 def fix_timestamp_dtype(df: pd.DataFrame, col: str = 'timestamp') -> pd.DataFrame:
@@ -81,11 +80,17 @@ def build_price_panel(start_date: str, end_date: str) -> pd.DataFrame:
 
 def build_weather_panel(start_date: str, end_date: str) -> pd.DataFrame:
     """
-    Build panel with weather data.
+    Build panel with weather data: one row per (timestamp, country).
 
-    Strategy: country-level unweighted mean across locations
-    (WEATHER_LOCATIONS). Capacity weighting would be the principled choice
-    but needs regional renewable-capacity data we have not acquired.
+    Levels (e.g. temperature_c): unweighted mean across the country's 'main'
+    locations. Capacity weighting would be the principled choice but needs
+    regional renewable-capacity data we have not acquired.
+
+    Intra-country dispersion, per variable, across ALL the country's
+    locations ('main' + 'reference'):
+      <var>_sd:    sample standard deviation across locations (ddof=1)
+      <var>_range: max - min across locations
+    Locations are listed in weather_locations.py.
     """
     logger.info("Building weather panel...")
 
@@ -96,13 +101,26 @@ def build_weather_panel(start_date: str, end_date: str) -> pd.DataFrame:
         ORDER BY timestamp, location
     """, start_date, end_date)
 
-    location_to_country = {loc: c for c, locs in WEATHER_LOCATIONS.items() for loc in locs}
-    df['country'] = df['location'].map(location_to_country)
-    weather_panel = (df.dropna(subset=['country'])
-                       .groupby(['timestamp', 'country'], as_index=False)[WEATHER_VARIABLES]
-                       .mean())
+    meta = pd.DataFrame.from_dict(WEATHER_LOCATIONS, orient='index')[['country', 'role']]
+    df = df.join(meta, on='location', how='inner')  # drops locations no longer registered
 
-    logger.info(f"Weather panel: {len(weather_panel):,} rows")
+    missing = sorted(set(WEATHER_LOCATIONS) - set(df['location']))
+    if missing:
+        logger.warning(f"No weather rows in window for {len(missing)} registered location(s): "
+                       f"{missing} -- run weather_ingest for this window")
+
+    keys = ['timestamp', 'country']
+    levels = (df[df['role'] == 'main']
+              .groupby(keys)[WEATHER_VARIABLES].mean())
+    grouped = df.groupby(keys)[WEATHER_VARIABLES]
+    sd = grouped.std().add_suffix('_sd')
+    spread = (grouped.max() - grouped.min()).add_suffix('_range')
+
+    weather_panel = levels.join([sd, spread], how='outer').reset_index()
+    weather_panel = weather_panel[keys + WEATHER_COLUMNS]
+
+    logger.info(f"Weather panel: {len(weather_panel):,} rows, "
+                f"{weather_panel['country'].nunique()} countries")
     return weather_panel
 
 

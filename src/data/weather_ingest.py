@@ -4,8 +4,10 @@ Weather data ingestion using Open-Meteo API.
 Open-Meteo provides historical weather data based on ERA5 reanalysis.
 It's free for non-commercial use with no API key required!
 
-We need weather data for multiple locations across Spain and Portugal
-because renewable generation varies by region.
+We need weather data for multiple locations in every panel country because
+renewable generation varies by region. The locations (and whether each one
+feeds the country's level or its dispersion variables) are defined in
+weather_locations.py.
 """
 
 import argparse
@@ -15,6 +17,8 @@ from pathlib import Path
 import logging
 from tqdm import tqdm
 import time
+
+from src.data.weather_locations import LOCATIONS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,17 +35,11 @@ DEFAULT_START = '2021-12-31'
 DEFAULT_END = '2023-12-31'
 
 
-# Representative locations across Iberian Peninsula
-# These capture geographic diversity in weather patterns
-LOCATIONS = {
-    'Madrid': {'lat': 40.4168, 'lon': -3.7038},      # Central Spain
-    'Barcelona': {'lat': 41.3874, 'lon': 2.1686},     # Northeast coast
-    'Seville': {'lat': 37.3891, 'lon': -5.9845},      # South Spain
-    'Bilbao': {'lat': 43.2630, 'lon': -2.9350},       # North coast
-    'Lisbon': {'lat': 38.7223, 'lon': -9.1393},       # Portugal coast
-    'Porto': {'lat': 41.1579, 'lon': -8.6291},        # North Portugal
-    'Faro': {'lat': 37.0194, 'lon': -7.9322},         # South Portugal (Algarve)
-}
+# Open-Meteo rate-limits by weighted calls (per minute/hour/day); with ~60
+# locations a full download can hit it, so HTTP 429 (and transient 5xx) is
+# retried after a pause
+MAX_RETRIES = 5
+RATE_LIMIT_PAUSE_S = 65
 
 
 def download_historical_weather(location_name: str,
@@ -87,8 +85,15 @@ def download_historical_weather(location_name: str,
     }
 
     try:
-        # Make API request
-        response = requests.get(url, params=params, timeout=30)
+        # Make API request, waiting out the rate limit if we hit it
+        for attempt in range(1, MAX_RETRIES + 1):
+            response = requests.get(url, params=params, timeout=60)
+            retryable = response.status_code == 429 or response.status_code >= 500
+            if not retryable or attempt == MAX_RETRIES:
+                break
+            logger.warning(f"Open-Meteo HTTP {response.status_code} ({location_name}); "
+                           f"retry {attempt}/{MAX_RETRIES - 1} in {RATE_LIMIT_PAUSE_S}s")
+            time.sleep(RATE_LIMIT_PAUSE_S)
         response.raise_for_status()  # Raise error for bad status codes
 
         data = response.json()
@@ -121,18 +126,24 @@ def download_historical_weather(location_name: str,
 
 def download_all_locations(start_date: str = DEFAULT_START,
                            end_date: str = DEFAULT_END,
-                           chunk_years: int = 1):
+                           chunk_years: int = 1,
+                           overwrite: bool = False):
     """
     Download weather data for all locations.
 
     We chunk by year because Open-Meteo has a 10,000 request/day limit.
-    Each location x year = 1 request, so 7 locations x 5 years = 35 requests total.
-    Well under the limit!
+    Each location x year = 1 request.
+
+    A location whose file for this exact window already exists is skipped
+    unless overwrite=True, so an interrupted run can simply be re-run. A
+    location file is only written when every chunk succeeded, so a skipped
+    file is always complete.
 
     Args:
         start_date: 'YYYY-MM-DD' (inclusive, UTC day)
         end_date: 'YYYY-MM-DD' (inclusive, UTC day)
         chunk_years: Download this many years at a time
+        overwrite: Re-download locations whose file already exists
     """
     logger.info("="*60)
     logger.info("WEATHER DATA DOWNLOAD STARTING")
@@ -143,12 +154,19 @@ def download_all_locations(start_date: str = DEFAULT_START,
 
     for location_name, coords in tqdm(LOCATIONS.items(), desc="Locations"):
 
+        output_file = RAW_DIR / f"weather_{location_name}_{start_date}_{end_date}.parquet"
+        if output_file.exists() and not overwrite:
+            logger.info(f"Skipping {location_name}: {output_file.name} already exists")
+            all_data.append(pd.read_parquet(output_file))
+            continue
+
         # Chunk by year
         start = pd.to_datetime(start_date)
         end = pd.to_datetime(end_date)
         current = start
 
         location_data = []
+        location_failed = False
 
         # Open-Meteo's end_date is inclusive, so chunks must not share a day
         while current <= end:
@@ -167,6 +185,7 @@ def download_all_locations(start_date: str = DEFAULT_START,
                     location_data.append(df)
                 else:
                     failed.append((location_name, current.date()))
+                    location_failed = True
 
                 # Small delay to be polite to the API
                 time.sleep(1)
@@ -174,16 +193,17 @@ def download_all_locations(start_date: str = DEFAULT_START,
             except Exception as e:
                 logger.error(f"Failed chunk for {location_name}: {e}")
                 failed.append((location_name, current.date()))
+                location_failed = True
 
             current = chunk_end + pd.Timedelta(days=1)
 
-        # Combine chunks for this location
-        if location_data:
+        # Combine chunks for this location; a partial location is not saved,
+        # so the next run retries it instead of skipping an incomplete file
+        if location_data and not location_failed:
             location_df = pd.concat(location_data, ignore_index=True)
             all_data.append(location_df)
 
             # Save individual location file
-            output_file = RAW_DIR / f"weather_{location_name}_{start_date}_{end_date}.parquet"
             location_df.to_parquet(output_file, compression='snappy', index=False)
 
     # Combine all locations
@@ -210,5 +230,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download Open-Meteo hourly weather (UTC).")
     parser.add_argument('--start', default=DEFAULT_START, help="first UTC day (inclusive)")
     parser.add_argument('--end', default=DEFAULT_END, help="last UTC day (inclusive)")
+    parser.add_argument('--overwrite', action='store_true',
+                        help="re-download locations whose file already exists")
     args = parser.parse_args()
-    download_all_locations(args.start, args.end)
+    download_all_locations(args.start, args.end, overwrite=args.overwrite)

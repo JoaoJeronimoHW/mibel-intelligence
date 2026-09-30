@@ -161,8 +161,9 @@ python -m src.data.omie_ingest
 # ENTSO-E — Day-ahead prices for 12 donor countries + ES<->PT, ES<->FR flows
 python -m src.data.entsoe_ingest            # --start/--end
 
-# Open-Meteo — Hourly weather for 7 Iberian locations (UTC)
-python -m src.data.weather_ingest           # --start/--end (default 2021-12-31..2023-12-31)
+# Open-Meteo — Hourly weather for 65 locations across the 8 panel countries (UTC)
+# Locations are listed in src/data/weather_locations.py; existing files are skipped
+python -m src.data.weather_ingest           # --start/--end (default 2021-12-31..2023-12-31), --overwrite
 ```
 
 **Output after this step:**
@@ -219,7 +220,7 @@ python -m src.data.build_panel --start 2022-06-15 --end 2022-06-22 --countries E
 
 1. A **complete hourly UTC index** is generated for the requested market days (day boundaries at Iberian local midnight), so there are no gaps across DST transitions. Two years = 17,520 hours.
 2. **Prices**, **weather** and **flows** are queried with the *same* half-open UTC window and parameterised SQL.
-3. **Weather** is aggregated from city level to country level (ES, PT) by an **unweighted mean** across locations (Madrid + Barcelona + Seville + Bilbao → ES; Lisbon + Porto + Faro → PT).
+3. **Weather** is aggregated from city level to country level for all eight countries (`src/data/weather_locations.py`). Each location is either `main` (the largest cities) or `reference` (extra cities covering other climate regions and renewable hot spots). **Levels** (`temperature_c`, `wind_speed_100m`, `solar_radiation`, `dni`, `cloud_cover`) are the **unweighted mean** of the `main` cities (for ES/PT these are the original Madrid + Barcelona + Seville + Bilbao and Lisbon + Porto + Faro). **Intra-country dispersion** is computed across **all** of a country's cities: `<var>_sd` (sample standard deviation) and `<var>_range` (max − min).
 4. **Cross-border flows** are pivoted to one column per directed pair (e.g. `ES_to_FR_mw`) and attached to every country-hour.
 5. Every source is left-joined onto the `(timestamp, country)` skeleton; the match rate of each join is logged and a zero match rate raises.
 6. **Time features** are appended in Iberian market local time: `hour`, `day_of_week`, `month`, `year`, `quarter`, `day_of_year`, `is_weekend`, and `is_iberian_exception` (market days 2022-06-15 to 2023-12-31).
@@ -291,7 +292,7 @@ OMIE publishes in CET/CEST market time on an `H1..H25` grid, ENTSO-E returns tz-
 
 - **Hour-index-first approach:** build the complete time skeleton, then merge data onto it. Missing data becomes explicit `NaN`, never a missing row.
 - **Compound-key left joins** on `(timestamp, country)`, with `validate=` cardinality checks and logged match rates.
-- **Weather aggregation:** an unweighted mean of the locations in each country — a transparent approximation; capacity weighting would need regional renewable-capacity data not yet acquired.
+- **Weather aggregation:** an unweighted mean of the main-city locations in each country, plus dispersion across main + reference cities — a transparent approximation; capacity weighting would need regional renewable-capacity data not yet acquired.
 
 ---
 
