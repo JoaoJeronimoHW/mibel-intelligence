@@ -1,0 +1,417 @@
+MIBEL INTELLIGENCE -- FIX LOG
+=============================
+
+Scope    : every defect in Part F ("Known defects, ranked") of
+           mibel_PIPELINE_MANUAL.pdf / docs/PIPELINE_MANUAL.md, plus problems
+           found while fixing them.
+Baseline : commit 85291bf (the commit the manual was compiled against)
+Date     : 2026-09-30
+Status   : all 15 Part F items addressed. Verification figures are at the end.
+
+Backups made before anything was changed
+  data/mibel_pre_utc_fix_backup.duckdb   copy of the database as it was
+  prices_day_ahead_legacy_naive (table)  the 35,032 pre-fix rows, kept by
+                                         the schema migration
+  The Power BI exports and dashboard.pbix were built on the old labels and
+  can be reproduced from either copy. Drop both once they are no longer
+  needed.
+
+
+-------------------------------------------------------------------------------
+#1  Timestamps are Europe/Lisbon wall time, not UTC            [critical] D-01
+-------------------------------------------------------------------------------
+Problem
+  Two errors stacked. (a) OMIE's H{n} is hour n-1 of the CET/CEST market day,
+  but the loader labelled it UTC. (b) The schema used naive TIMESTAMP, so
+  DuckDB converted the tz-aware values into the OS session zone
+  (Europe/Lisbon) and dropped the offset. Net effect: labels were +1 h off in
+  winter and +3 h in summer, and the result depended on the build machine.
+  Confirmed at the start of this work:
+  SELECT current_setting('TimeZone') returned 'Europe/Lisbon'.
+
+Fix
+  - src/utils/timezone_utils.py
+      * omie_hours_to_utc(): hour n = (local midnight of the market day, in
+        Europe/Madrid, converted to UTC) + (n-1) hours. OMIE numbers hours
+        sequentially in real time, so this is exact on 23- and 25-hour days,
+        with no ambiguous or nonexistent wall-clock lookups.
+      * market_window_utc(): the single date-window convention (see #7).
+      * create_hour_index(): day boundaries are market days (local midnight),
+        so 2022-01-01..2023-12-31 is exactly the 17,520 hours OMIE published.
+      * add_time_features(): calendar features (hour, day_of_week, ...) are
+        now computed in market local time. is_iberian_exception now starts at
+        00:00 local on 2022-06-15 (22:00 UTC on 14 June), not at 00:00 UTC.
+      * assert_utc_hourly(): asserts tz-aware UTC, on the hour, unique keys.
+  - src/utils/db_schema.py: every timestamp column is TIMESTAMPTZ.
+    migrate_naive_timestamps() upgrades an existing database. A PK column
+    cannot be retyped in place in DuckDB 0.10, so each old table is copied to
+    <table>_legacy_naive (if non-empty), dropped and recreated.
+  - src/utils/db_utils.py: get_connection() runs SET TimeZone='UTC'. The
+    manual asked for both measures ("belt and braces"); both are in place.
+  - Database reloaded from the untouched raw files (decision B2).
+
+Verified against the raw values the manual quotes
+  2022-03-27 H1  258.17 -> 2022-03-26 23:00 UTC   (00:00 CET)
+  2022-03-27 H2  242.01 -> 2022-03-27 00:00 UTC
+  2022-10-30 H1  139.17 -> 2022-10-29 22:00 UTC   (00:00 CEST)
+  2022-10-30 H2  105.10 -> 2022-10-29 23:00 UTC   (previously LOST)
+  2022-10-30 H25 141.73 -> 2022-10-30 22:00 UTC   (previously DISCARDED)
+  2023-10-29 H2    1.38 -> 2023-10-28 23:00 UTC   (previously LOST)
+  A connection with the default Europe/Lisbon session reads the same
+  instants (epoch values are identical), so the result no longer depends on
+  the machine.
+
+Consequences to be aware of
+  - The panel's `hour` column is now true Iberian local hour (the old one was
+    local in winter and local+1 in summer). The hourly profile still peaks at
+    21:00 local (163.5 EUR/MWh) and bottoms out at 15:00 (100.3).
+  - The pre/during split moved by 2 hours at the treatment boundary.
+    Figures are almost unchanged: ES pre 211.81 (was 211.80), during 102.64
+    (was 102.66). Coupling statistics are unchanged (corr 0.9953, 95.9% equal
+    hours, ES>PT 102 h, PT>ES 613 h).
+  - Notebooks, Power BI CSVs and dashboard.pbix have NOT been regenerated.
+    Re-run notebooks/full_panel.ipynb to refresh them. It has local
+    uncommitted edits, so it was left untouched.
+
+
+-------------------------------------------------------------------------------
+#2  ML training set is empty; the script reports success          [high] D-14
+-------------------------------------------------------------------------------
+Problem
+  create_all_features() ended with an unrestricted df.dropna(). The five
+  all-NaN weather columns emptied the frame, and the prints still reported
+  success. train_data.parquet and test_data.parquet were 0 rows x 39 columns.
+
+Fix (mlops/models/training/feature_engineering.py) -- all three remedies
+from the manual, plus two bugs found on the way
+  - dropna(subset=feature_names + ['price_eur_mwh']): only columns the model
+    uses can drop a row.
+  - A missingness audit prints [WARN] for any column more than 50% NaN and
+    says whether the model uses it.
+  - create_all_features() raises ValueError when fewer than min_rows (default
+    1) rows survive. prepare_train_test_split() raises on an empty input or an
+    empty split.
+  - NEW BUG FIXED: lags and rolling windows ran on the frame sorted by
+    (country, timestamp) with no groupby. Portugal's first 168 hours of lags
+    were therefore Spanish prices (cross-entity leakage). Both are now
+    computed per country.
+  - NEW BUG FIXED: __main__ took list(glob(...))[-1], an arbitrary file. On
+    this disk that could be the 7-day pilot panel, too short for 168 h lags.
+    It now takes --panel, or defaults to the panel with the most rows.
+  - feature_names is reset on each call, so re-running does not duplicate it.
+  - days_since_policy counts from 00:00 local on 2022-06-15.
+  - Emoji output replaced with ASCII (see #9).
+Result: 34,704 rows (33,262 train / 1,442 test), 24 features. The dropped
+  rows are exactly the 168-hour warm-up per country (2 x 168 = 336). The old
+  empty files were backed up to the session scratchpad before being
+  overwritten.
+
+
+-------------------------------------------------------------------------------
+#3  ENTSO-E and Open-Meteo never downloaded                       [high] D-15
+-------------------------------------------------------------------------------
+Fix
+  - Open-Meteo downloaded: 7 locations, 2021-12-31..2023-12-31 UTC (one extra
+    UTC day, because market day 2022-01-01 starts at 2021-12-31 23:00 UTC).
+    122,808 rows = 7 x 17,544 hours.
+  - ENTSO-E downloaded with the key in .env: day-ahead prices for the 12
+    donor countries (FR DE IT NL BE AT DK SE NO FI PL CZ; 17,521 h each, no
+    gaps) and physical flows for ES->PT, PT->ES, ES->FR, FR->ES
+    (70,080 hourly rows = 4 x 17,520), 2022-01-01..2023-12-31.
+  - src/data/entsoe_ingest.py changes needed to make the download correct:
+      * PRICE_BIDDING_ZONES: DE, IT, DK, SE and NO are not single bidding
+        zones, so requests for them return no prices. They now query DE_LU,
+        IT_NORD, DK_1, SE_3 and NO_1 and store the result under the
+        two-letter code.
+      * The end date was exclusive (the last day was silently dropped). All
+        dates are now inclusive days, turned into a half-open request window.
+      * Chunks no longer overlap. Flows are chunked too and saved one file per
+        pair (previously nothing was saved if ES->PT alone came back empty).
+      * The client is created once. A missing API key now raises instead of
+        being swallowed into empty frames. Failed chunks are listed at the end.
+      * Flow parsing fixed. On the first run all 32 flow chunks failed inside
+        entsoe-py 0.6.5 with "Length mismatch". ENTSO-E now sends flows as
+        curve type A03, which omits positions that repeat the previous value,
+        and 0.6.5's flow parser does not handle that (its generic parser
+        does). download_cross_border_flows() now fetches the raw XML with
+        EntsoeRawClient and parses it with the generic A03-aware parser.
+        Cross-checked: ES->FR on 2022-06-15 gives the same values as the
+        stock parser returned for that one-day request (721.12, 735.63,
+        814.07 MW). ES<->FR switched to 15-minute resolution during 2023;
+        the loader averages it to hourly MW.
+      * Prices trimmed to the half-open window (entsoe-py includes the end
+        hour; raw files from this run carry one extra hour, which the panel
+        window excludes).
+      * argparse --start/--end. The default window matches the OMIE data.
+  - src/data/weather_ingest.py: timestamps stored tz-aware UTC at ingestion.
+    Yearly chunks no longer share a boundary day (Open-Meteo's end date is
+    inclusive). Failed chunks are reported. argparse --start/--end.
+Not done: generation by fuel (D-15 consequence 4). No loader for the
+  generation table exists and Part F #3 does not include it.
+  download_generation_by_country() is available when needed.
+
+
+-------------------------------------------------------------------------------
+#4  Weather/flow loaders: SELECT * with mismatched column order   [high] D-10
+-------------------------------------------------------------------------------
+Fix (src/data/load_to_db.py)
+  All loaders insert through _replace_rows(), which always uses an explicit
+  list: INSERT INTO t (c1, c2, ...) SELECT c1, c2, ... FROM frame.
+  WEATHER_COLUMNS, FLOW_COLUMNS and PRICE_COLUMNS state the table order once.
+  Test: test_weather_and_flow_loaders_match_columns_by_name feeds a frame in
+  ingest column order and checks every value lands in the right column.
+
+
+-------------------------------------------------------------------------------
+#5  Four scripts can load prices; the documented one did not run  [med] D-12
+-------------------------------------------------------------------------------
+Fix
+  - src/data/load_to_db.py is the single loader and has absorbed the fixes
+    from the rescue scripts (ASCII output, correct hour mapping, duplicate
+    handling).
+  - Deleted from the working tree (still in git history, not committed):
+    fix_midnight_hour.py (which also carried the false "INSERT OR REPLACE"
+    banner), fix_and_reload_data.py, load_omie_to_db.py.
+  - download_2year_dataset.py is now a thin wrapper around
+    batch_download_prices(chunk_months=3), with no prompt. Its "next steps"
+    point at load_to_db. `python -m src.data.omie_ingest` produces the same
+    eight quarterly files.
+  - diagnose_duplicates.py now reuses load_to_db.omie_wide_to_long, so it
+    checks exactly what the loader loads (its old copy of the transform still
+    had the D-01 bug).
+  - Also: every table replacement is one transaction, rolled back on error,
+    so a failure can no longer leave a table empty (the D-05 failure mode).
+    It is implemented as "delete in-scope rows whose key is not in the new
+    data, then INSERT ... ON CONFLICT (pk) DO UPDATE", because DuckDB 0.10
+    rejects deleting and re-inserting the same primary key within one
+    transaction (a documented index limitation, found here when the second
+    reload failed). A regression test loads twice.
+
+
+-------------------------------------------------------------------------------
+#6  DST fold discards two real prices per country per year    [med] D-03/D-04
+-------------------------------------------------------------------------------
+Fix: folded into #1, as the manual suggested.
+  - H25 is read on autumn days. Every OMIE hour column that has a value is
+    loaded.
+  - The fold is two distinct UTC hours, so there is no key collision.
+  - INSERT OR IGNORE is gone. Before writing, the loader de-duplicates
+    identical rows from overlapping files, RAISES ValueError on conflicting
+    prices for the same key, and asserts key uniqueness. A second real price
+    can therefore never be silently discarded.
+  - The loader warns if any market day's price count differs from its hour
+    count (23/24/25). None did.
+Result: 17,520 prices per country (was 17,516). 0 missing hours in the panel
+  (was 4 per country).
+
+
+-------------------------------------------------------------------------------
+#7  Inconsistent end-date semantics                              [med] D-13
+-------------------------------------------------------------------------------
+Fix
+  One convention, defined once in timezone_utils.market_window_utc():
+  start_date and end_date are inclusive market days, giving a half-open UTC
+  window [local midnight of start, local midnight of end+1). The skeleton and
+  the price, weather and flow queries all use it (build_panel._window_query).
+  The ingestion scripts also use inclusive days with non-overlapping chunks
+  (see #3).
+  Test: test_panel_window_is_consistent_across_sources checks that the final
+  day's weather and flows are present.
+
+
+-------------------------------------------------------------------------------
+#8  input() in module entry points blocks automation             [med] D-17
+-------------------------------------------------------------------------------
+Fix
+  - src/data/omie_ingest.py: argparse (--start, --end, --chunk-months,
+    --bid-curves none|sample|full, --sample-days, --yes). The default is the
+    safe prices-only run. "--bid-curves full" is refused without --yes. The
+    implicit "which files exist" tier detection was removed.
+  - download_2year_dataset.py: the "Press Enter" prompt was removed.
+  - build_panel, weather_ingest, entsoe_ingest and feature_engineering also
+    gained argparse entry points. No input() remains in the repository.
+
+
+-------------------------------------------------------------------------------
+#9  Unicode output crashes Windows consoles                       [med] D-05
+-------------------------------------------------------------------------------
+Fix
+  Every project .py file was swept: check marks, crosses, warning signs,
+  emoji and arrows became [OK]/[ERROR]/[FAIL]/[WARN]/->. No non-ASCII
+  character remains in any project Python file (checked by script).
+  load_to_db.py and diagnose_pipeline.py (the two files the manual names)
+  were verified under PYTHONIOENCODING=cp1252. So were feature_engineering,
+  weather_ingest and entsoe_ingest.
+  _tmp_nonascii.txt and load_output.txt at the repo root are artefacts of
+  the original incident and were left in place.
+
+
+-------------------------------------------------------------------------------
+#10 README references wrong module and table names              [med] D-18
+-------------------------------------------------------------------------------
+Fix: README.md rewritten against the actual tree.
+  - Module names: db_utils / db_schema / timezone_utils. Table names:
+    prices_day_ahead / cross_border_flows / bid_curves.
+  - Examples import from src.utils.db_utils and use parameterised SQL. The
+    deprecated resample("M") was removed.
+  - Real coverage (2022-2023), real row counts (140,160 = 8 x 17,520), real
+    raw file names, CLI flags, the test command, bidding-zone mapping, and
+    the timezone design as implemented.
+  - The build_weather_panel docstring now says "unweighted mean" (it claimed
+    population weighting).
+  - The false fix_midnight_hour.py banner went with the script (#5).
+  - CLAUDE.md updated in the same way.
+
+
+-------------------------------------------------------------------------------
+#11 Row-by-row inserts, ~1000x slower                            [low] D-11
+-------------------------------------------------------------------------------
+Fix: omie_wide_to_long() melts H1..H25 in one vectorised operation and
+  computes timestamps arithmetically. Each table is written with one bulk
+  set-based statement (INSERT ... SELECT ... ON CONFLICT). A full OMIE reload of 35,040 rows takes about 1.3 s; the
+  whole load_to_db run takes about 2.6 s. The manual reports minutes.
+
+
+-------------------------------------------------------------------------------
+#12 Debug print() calls in build_price_panel                   [low] Step 7
+-------------------------------------------------------------------------------
+Fix: removed. The logger reports row and country counts, and the panel logs
+  a per-source match rate and per-country missing-price rate.
+
+
+-------------------------------------------------------------------------------
+#13 Per-country merge relies on a prior filter                   [low] D-08
+-------------------------------------------------------------------------------
+Fix: build_main_panel() builds the (timestamp x country) skeleton with a
+  cross join and merges prices and weather on ['timestamp', 'country'] with
+  validate='one_to_one', and flows on 'timestamp' with
+  validate='many_to_one'. The country_check scaffold and the per-country loop
+  are gone. _merge_checked() asserts the row count is unchanged, logs the
+  match rate, and raises when a non-empty source matches nothing (the D-06
+  all-NaN signature). The final row count is asserted to equal countries x
+  hours. The redundant fix_timestamp_dtype() calls were consolidated.
+
+
+-------------------------------------------------------------------------------
+#14 Glob patterns match their own aggregate files                [low] D-09
+-------------------------------------------------------------------------------
+Fix, applied on both sides
+  - The ingest scripts write combined files to data/raw/<source>/combined/,
+    which the non-recursive loader globs cannot reach.
+  - The loader's _raw_files() also skips any "*_all_*" file, which covers
+    combined files written by older code.
+  Test: a weather_all_*.parquet placed beside a per-location file is not
+  loaded twice.
+
+
+-------------------------------------------------------------------------------
+#15 Dates interpolated into SQL by f-string                      [low] D-13
+-------------------------------------------------------------------------------
+Fix: execute_query(sql, params) binds ? parameters. All panel queries bind
+  tz-aware UTC Timestamps. table_exists() binds the table name, and
+  get_table_info/get_row_count validate the name before quoting it. The
+  remaining f-strings in SQL only interpolate table names from module
+  constants or information_schema.
+
+
+===============================================================================
+ADDITIONAL PROBLEMS FOUND AND FIXED (not in Part F)
+===============================================================================
+A1 .gitignore hid the pipeline source code.
+   The pattern "data/" also matched src/data/, so omie_ingest.py,
+   entsoe_ingest.py, weather_ingest.py, load_to_db.py and build_panel.py have
+   never been committed. It is now anchored as "/data/". The five modules
+   show up as untracked files and need to be committed.
+
+A2 The test suite destroyed the production database.
+   test_build_panel.py runs DELETE FROM prices_day_ahead and
+   test_database_loading.py deletes ES rows, both against data/mibel.duckdb.
+   The download tests wrote files into data/raw. New tests/conftest.py gives
+   every test a temporary DB and temporary raw/processed directories. The
+   checksum of data/mibel.duckdb is identical before and after a full pytest
+   run.
+   debug_timestamp_merge.py had the same flaw (it deleted the real ES/PT
+   prices and inserted fakes). It now works in a throwaway temp database.
+
+A3 Failing tests passed.
+   The tests report failure with "return False", which pytest ignores.
+   conftest.py now turns a returned False into a test failure.
+   pytest was also missing from the venv and requirements.txt, although
+   CLAUDE.md documents it. It is now pinned (pytest==8.3.3) and installed.
+
+A4 Regression tests added (tests/test_pipeline_fixes.py, 6 tests, offline):
+   DST-day UTC mapping including H25; storage independent of session time
+   zone and repeatable reloads; column-order-safe weather/flow loads with an
+   aggregate file present;
+   consistent panel window including the last day; market-day index and
+   policy-flag boundary; feature engineering with all-NaN weather and no
+   cross-country lag leakage.
+
+A5 diagnose_pipeline.py gained two checks: all timestamp columns are
+   TIMESTAMPTZ, and each country's hourly price series has no gaps.
+
+A6 ruff: unused imports and placeholder-less f-strings in src/ auto-fixed.
+   ruff check is clean on src/ and the new tests. E402 is left as-is; it is
+   the repository's existing sys.path pattern.
+
+
+===============================================================================
+NOT CHANGED -- ACTION NEEDED BY THE OWNER
+===============================================================================
+S1 SECRETS ARE COMMITTED. .env and entsoe_token_api.txt are tracked in git
+   (they appear in `git ls-files` and in history). They are now listed in
+   .gitignore, but that has no effect on tracked files. Recommended:
+     1. rotate the ENTSO-E API key;
+     2. git rm --cached .env entsoe_token_api.txt  and commit;
+     3. if the repository was ever pushed, purge them from history
+        (git filter-repo) or treat the old key as public.
+   None of this was done automatically, because it rewrites history and
+   involves credentials.
+
+S2 Nothing was committed. Changes are in the working tree only. The three
+   deleted scripts show as deletions, the five src/data modules as untracked.
+
+S3 Notebooks, data/powerbi_exports/*.csv and dashboard.pbix still reflect the
+   old labels. Re-run notebooks/full_panel.ipynb.
+
+S4 Manual Part E5 contains an analytical error that is independent of the
+   pipeline. It says "exactly 10 hours sit at precisely 300.00" as evidence of
+   a cap visible in the treatment window. In both the old and the corrected
+   data, 9 of those 10 hours are PRE-treatment (Feb-Apr 2022). Only one
+   (2022-09-10 19:00 UTC) falls inside the exception. The claim should be
+   withdrawn. The drop in maximum (700 -> 300) and in dispersion stand.
+
+S5 The manual itself (docs/PIPELINE_MANUAL.md and the PDF) was not edited.
+   It is a record of the state at 85291bf. This log supersedes its "unresolved"
+   markers. Part G's rebuild checklist is superseded by the README quickstart.
+
+S6 Clean-up when no longer needed: data/mibel_pre_utc_fix_backup.duckdb and
+   the prices_day_ahead_legacy_naive table.
+
+
+===============================================================================
+VERIFICATION (measured after the fixes)
+===============================================================================
+Manual Part G gates, old expectation -> now
+  raw OMIE files                     8                -> 8
+  SELECT COUNT(*) prices (ES+PT)     35,032           -> 35,040
+  duplicate keys                     none             -> none (asserted in the loader)
+  panel rows (ES, PT)                35,040           -> 35,040
+  missing price share                < 0.001 (0.023%) -> 0.000
+  rows per country                   17,520           -> 17,520
+Full pipeline
+  prices_day_ahead      245,292 rows: ES, PT 17,520 each; 12 donors 17,521
+                        each (see #3); every series gapless
+  weather               122,808 rows (7 locations x 17,544 h)
+  cross_border_flows     70,080 rows (4 directed pairs x 17,520 h)
+  main panel            140,160 rows = 8 countries x 17,520 h, 20 columns;
+                        0% missing prices for every country; weather 100%
+                        for ES/PT; 4 flow columns 100% populated
+  pilot panel           2022-06-15..22 rebuilt: 384 rows, all sources 100%
+  ML features           34,704 rows (33,262 train / 1,442 test), 24 features
+  load_to_db            about 3 s for all sources; idempotent (run twice)
+  diagnose_pipeline.py  0 FAIL, including the two new checks; runs under a
+                        cp1252 console
+  pytest tests/         18 passed. data/mibel.duckdb has the same md5
+                        before and after the run. 3 tests use live APIs.
+  ruff check src/       clean

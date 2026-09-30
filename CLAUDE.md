@@ -20,17 +20,18 @@ python create_env.py             # Interactive script to set ENTSOE_API_KEY in .
 ### Run the pipeline (in order)
 
 ```bash
-python -m src.data.omie_ingest        # Download OMIE data (no API key, ~10-20 min)
+python -m src.data.omie_ingest        # Download OMIE prices 2022-2023 (no API key; --bid-curves sample|full --yes)
 python -m src.data.entsoe_ingest      # Download ENTSO-E data (API key required)
 python -m src.data.weather_ingest     # Download Open-Meteo weather (free)
 python -m src.data.load_to_db         # Load all raw Parquet → DuckDB
-python -m src.data.build_panel        # Build hourly country panel → data/processed/
+python -m src.data.build_panel        # Build hourly country panel → data/processed/ (--start --end --countries)
+python diagnose_pipeline.py           # End-to-end health check
 ```
 
 ### Tests
 
 ```bash
-python -m pytest tests/                       # All tests
+python -m pytest tests/                       # All tests (conftest.py isolates them in a temp DB)
 python -m pytest tests/test_timezone_utils.py # Single test file
 ```
 
@@ -46,21 +47,21 @@ ruff check src/
 ### Pipeline stages
 
 1. **Ingest** (`src/data/*_ingest.py`): Download raw data from APIs → save as Snappy-compressed Parquet in `data/raw/`
-2. **Load** (`src/data/load_to_db.py`): Transform Parquet files and `INSERT OR IGNORE` into DuckDB tables (deduplication handled here)
+2. **Load** (`src/data/load_to_db.py`, the only loader): Transform Parquet files, dedupe and assert unique UTC keys, then DELETE+INSERT per table in one transaction with explicit column lists
 3. **Build panel** (`src/data/build_panel.py`): Create gapless hourly UTC index → left-join all sources → save to `data/processed/`
 
 Each stage is idempotent and independent.
 
 ### Database layer (`src/utils/`)
 
-- `db_utils.py`: Central DuckDB connection management. DB at `data/mibel.duckdb`. Use `get_connection()` / `execute_query()`.
-- `db_schema.py`: Creates 5 tables: `prices_day_ahead`, `generation`, `cross_border_flows`, `weather`, `bid_curves`.
-- `timezone_utils.py`: All timestamps normalized to UTC once at ingestion. Use `normalize_to_utc()`, `handle_dst_transitions()`, `create_hour_index()`, `add_time_features()`.
+- `db_utils.py`: Central DuckDB connection management. DB at `data/mibel.duckdb`. Use `get_connection()` / `execute_query(sql, params)`. Every connection runs `SET TimeZone='UTC'`.
+- `db_schema.py`: Creates 5 tables: `prices_day_ahead`, `generation`, `cross_border_flows`, `weather`, `bid_curves`. All `timestamp` columns are `TIMESTAMPTZ`; old naive tables are migrated automatically.
+- `timezone_utils.py`: All timestamps normalized to UTC once at ingestion. Use `market_window_utc()` (the one date-window convention), `omie_hours_to_utc()`, `create_hour_index()`, `add_time_features()` (calendar features in CET/CEST market time), `assert_utc_hourly()`.
 
 ### Panel structure
 
 Output: `data/processed/main_panel_YYYY-MM-DD_YYYY-MM-DD.parquet`
-Rows: one per hour per country (~8 countries × ~53,000 hours ≈ 424,000 rows)
+Rows: one per hour per country (8 countries × 17,520 hours = 140,160 rows for 2022-01-01..2023-12-31)
 Key column: `is_iberian_exception` (binary flag for policy analysis)
 
 ### Data sources
@@ -68,7 +69,7 @@ Key column: `is_iberian_exception` (binary flag for policy analysis)
 | Source | Countries | Requires key |
 |--------|-----------|--------------|
 | OMIE | Spain, Portugal | No |
-| ENTSO-E | 15 EU countries | Yes (register at transparency.entsoe.eu) |
+| ENTSO-E | 12 donor countries + ES/PT/FR flows | Yes (register at transparency.entsoe.eu) |
 | Open-Meteo | 7 Iberian locations | No |
 
 ### Key design decisions

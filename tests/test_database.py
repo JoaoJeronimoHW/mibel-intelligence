@@ -26,14 +26,14 @@ def test_database_connection():
         
         assert result['answer'].iloc[0] == 42, "Query returned wrong result"
         
-        print("  ✓ Database connection works")
-        print(f"  ✓ Database file: {Path('data/mibel.duckdb').absolute()}")
+        print("  [OK] Database connection works")
+        print(f"  [OK] Database file: {Path('data/mibel.duckdb').absolute()}")
         
         conn.close()
         return True
         
     except Exception as e:
-        print(f"  ✗ Database connection failed: {e}")
+        print(f"  [FAIL] Database connection failed: {e}")
         return False
 
 
@@ -45,7 +45,7 @@ def test_schema_creation():
     try:
         # Create schema
         create_schema()
-        print("  ✓ Schema created")
+        print("  [OK] Schema created")
         
         # Check that tables exist
         expected_tables = [
@@ -60,16 +60,16 @@ def test_schema_creation():
         
         for table in expected_tables:
             if table_exists(table):
-                print(f"  ✓ Table '{table}' exists")
+                print(f"  [OK] Table '{table}' exists")
             else:
-                print(f"  ✗ Table '{table}' missing")
+                print(f"  [FAIL] Table '{table}' missing")
                 return False
         
         conn.close()
         return True
         
     except Exception as e:
-        print(f"  ✗ Schema creation failed: {e}")
+        print(f"  [FAIL] Schema creation failed: {e}")
         return False
 
 
@@ -80,9 +80,9 @@ if __name__ == "__main__":
         success = test_schema_creation()
     
     if success:
-        print("\n✅ Database tests passed!")
+        print("\n[OK] Database tests passed!")
     else:
-        print("\n❌ Database tests failed!")
+        print("\n[ERROR] Database tests failed!")
         print("\nTroubleshooting:")
         print("  1. Make sure data/ directory exists")
         print("  2. Check that src/utils/db_utils.py has no syntax errors")

@@ -27,8 +27,8 @@ def test_weather_download():
         
         assert not df.empty, "No data returned"
         
-        print(f"  ✓ Downloaded {len(df)} hourly records")
-        print(f"  ✓ Columns: {list(df.columns)}")
+        print(f"  [OK] Downloaded {len(df)} hourly records")
+        print(f"  [OK] Columns: {list(df.columns)}")
         print(f"\nSample data:")
         print(df.head())
         
@@ -36,7 +36,7 @@ def test_weather_download():
         expected_cols = ['temperature_c', 'wind_speed_100m', 'solar_radiation']
         for col in expected_cols:
             assert col in df.columns, f"Missing column: {col}"
-            print(f"  ✓ Column '{col}' present")
+            print(f"  [OK] Column '{col}' present")
         
         # Check reasonable values
         temp = df['temperature_c'].mean()
@@ -44,19 +44,19 @@ def test_weather_download():
         solar = df['solar_radiation'].mean()
         
         print(f"\n  Average values:")
-        print(f"    Temperature: {temp:.1f} °C")
+        print(f"    Temperature: {temp:.1f}  degC")
         print(f"    Wind speed: {wind:.1f} m/s")
-        print(f"    Solar radiation: {solar:.1f} W/m²")
+        print(f"    Solar radiation: {solar:.1f} W/m2")
         
         assert -20 < temp < 50, f"Unrealistic temperature: {temp}"
         assert 0 <= wind < 50, f"Unrealistic wind speed: {wind}"
         assert 0 <= solar <= 1500, f"Unrealistic solar radiation: {solar}"
         
-        print("\n✅ Weather download test passed!")
+        print("\n[OK] Weather download test passed!")
         return True
         
     except Exception as e:
-        print(f"\n❌ Weather download failed: {e}")
+        print(f"\n[ERROR] Weather download failed: {e}")
         import traceback
         traceback.print_exc()
         return False

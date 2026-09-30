@@ -9,8 +9,14 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent))
 
+import tempfile
+from src.utils import db_utils
 from src.utils.db_utils import get_connection
 from src.utils.db_schema import create_schema
+
+# Work in a throwaway database: this script deletes and fakes ES/PT prices,
+# which must never happen to data/mibel.duckdb
+db_utils.DB_PATH = Path(tempfile.mkdtemp()) / "debug_timestamp_merge.duckdb"
 
 # Create schema and insert test data
 create_schema()

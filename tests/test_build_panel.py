@@ -25,7 +25,7 @@ def test_panel_construction_with_sample_data():
         # Step 1: Create schema
         print("\n1. Creating database schema...")
         create_schema()
-        print("  ✓ Schema created")
+        print("  [OK] Schema created")
         
         # Step 2: Insert sample data
         print("\n2. Creating sample data...")
@@ -39,7 +39,7 @@ def test_panel_construction_with_sample_data():
         
         # Verify it's empty
         count = conn.execute("SELECT COUNT(*) as c FROM prices_day_ahead").fetchdf()['c'].iloc[0]
-        print(f"  ✓ Table cleared (rows: {count})")
+        print(f"  [OK] Table cleared (rows: {count})")
         
         # Create timestamps - starting at MIDNIGHT
         timestamps = pd.date_range('2022-06-15 00:00:00', periods=48, freq='h', tz='UTC')
@@ -71,14 +71,14 @@ def test_panel_construction_with_sample_data():
         # Insert
         conn.execute("INSERT INTO prices_day_ahead SELECT * FROM sample_prices")
         conn.commit()
-        print("  ✓ Sample data inserted")
+        print("  [OK] Sample data inserted")
         
         # Verify what was inserted
         verify = conn.execute("""
             SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts, COUNT(*) as cnt
             FROM prices_day_ahead
         """).fetchdf()
-        print(f"  ✓ Verification: {verify['cnt'].iloc[0]} rows, {verify['min_ts'].iloc[0]} to {verify['max_ts'].iloc[0]}")
+        print(f"  [OK] Verification: {verify['cnt'].iloc[0]} rows, {verify['min_ts'].iloc[0]} to {verify['max_ts'].iloc[0]}")
         
         # Step 3: Query back
         print("\n3. Building panel structure...")
@@ -95,25 +95,25 @@ def test_panel_construction_with_sample_data():
         
         panel = conn.execute(query).fetchdf()
         
-        print(f"  ✓ Panel created: {len(panel)} rows")
-        print(f"  ✓ Date range: {panel['timestamp'].min()} to {panel['timestamp'].max()}")
+        print(f"  [OK] Panel created: {len(panel)} rows")
+        print(f"  [OK] Date range: {panel['timestamp'].min()} to {panel['timestamp'].max()}")
         
         # Step 4: Validate
         print("\n4. Validating panel structure...")
         
         countries = sorted(panel['country'].unique())
         assert countries == ['ES', 'PT'], f"Expected ['ES', 'PT'], got {countries}"
-        print(f"  ✓ Countries: {countries}")
+        print(f"  [OK] Countries: {countries}")
         
         hours_per_country = panel.groupby('country').size()
         assert all(hours_per_country == 48), f"Expected 48 hours per country"
-        print(f"  ✓ Each country has 48 hours")
+        print(f"  [OK] Each country has 48 hours")
         
         spain_ts = panel[panel['country'] == 'ES']['timestamp'].reset_index(drop=True)
         portugal_ts = panel[panel['country'] == 'PT']['timestamp'].reset_index(drop=True)
         
         assert spain_ts.equals(portugal_ts), "Timestamps don't align"
-        print(f"  ✓ Timestamps align across countries")
+        print(f"  [OK] Timestamps align across countries")
         
         # Step 5: Test merge
         print("\n5. Testing merge with weather data...")
@@ -143,7 +143,7 @@ def test_panel_construction_with_sample_data():
             how='left'
         )
         
-        print(f"  ✓ Merged: {panel.shape} → {panel_with_weather.shape}")
+        print(f"  [OK] Merged: {panel.shape} -> {panel_with_weather.shape}")
         
         # Check results
         spain_weather = panel_with_weather[panel_with_weather['country'] == 'ES']['temperature_c']
@@ -159,20 +159,20 @@ def test_panel_construction_with_sample_data():
         assert spain_null <= 1, f"Spain has {spain_null} missing values (expected 0-1)"
         assert portugal_null == 0, f"Portugal should have no weather"
         
-        print(f"  ✓ Merge validation passed")
+        print(f"  [OK] Merge validation passed")
         
         # Step 6: Cleanup
         print("\n6. Cleaning up...")
         conn.execute("DELETE FROM prices_day_ahead")
         conn.commit()
         conn.close()
-        print("  ✓ Cleanup complete")
+        print("  [OK] Cleanup complete")
         
-        print("\n✅ PANEL CONSTRUCTION TEST PASSED!")
+        print("\n[OK] PANEL CONSTRUCTION TEST PASSED!")
         return True
         
     except Exception as e:
-        print(f"\n❌ Test failed: {e}")
+        print(f"\n[ERROR] Test failed: {e}")
         import traceback
         traceback.print_exc()
         

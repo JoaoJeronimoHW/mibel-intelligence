@@ -24,6 +24,7 @@ ipykernel==6.29.0        # Jupyter kernel
 # Development tools
 black==24.1.1            # Code formatter
 ruff==0.1.14             # Fast linter
+pytest==8.3.3            # Test runner (python -m pytest tests/)
 python-dotenv==1.0.0     # Environment variables (for API keys)
 
 # Progress tracking

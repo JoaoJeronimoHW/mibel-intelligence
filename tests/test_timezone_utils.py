@@ -41,7 +41,7 @@ def test_normalize_to_utc():
     assert df_utc['timestamp'].iloc[0].hour == 10, "CET to UTC conversion failed"
     assert df_utc['timestamp'].iloc[0].tz == pytz.UTC, "Not in UTC timezone"
     
-    print("  ✓ CET to UTC works correctly")
+    print("  [OK] CET to UTC works correctly")
     
     # Test 1b: Already UTC (should not change)
     print("\n1b. Testing already-UTC data...")
@@ -53,7 +53,7 @@ def test_normalize_to_utc():
     df_result = normalize_to_utc(df_already_utc)
     
     assert df_result['timestamp'].iloc[0].hour == 12, "UTC data changed incorrectly"
-    print("  ✓ Already-UTC data unchanged")
+    print("  [OK] Already-UTC data unchanged")
     
     # Test 1c: Naive timestamps (no timezone)
     print("\n1c. Testing naive timestamps (no timezone)...")
@@ -65,9 +65,9 @@ def test_normalize_to_utc():
     df_result = normalize_to_utc(df_naive)
     
     assert df_result['timestamp'].iloc[0].tz == pytz.UTC, "Naive timestamps not converted to UTC"
-    print("  ✓ Naive timestamps handled (assumed UTC)")
+    print("  [OK] Naive timestamps handled (assumed UTC)")
     
-    print("\n✅ TEST 1 PASSED: normalize_to_utc works correctly\n")
+    print("\n[OK] TEST 1 PASSED: normalize_to_utc works correctly\n")
     return True
 
 
@@ -82,7 +82,7 @@ def test_create_hour_index():
     print("\n2a. Creating 3-day hourly index...")
     hour_index = create_hour_index('2022-06-15', '2022-06-17')
     
-    expected_hours = 3 * 24  # 3 days × 24 hours
+    expected_hours = 3 * 24  # 3 days x 24 hours
     actual_hours = len(hour_index)
     
     print(f"  Expected hours: {expected_hours}")
@@ -98,24 +98,24 @@ def test_create_hour_index():
     gaps = time_diffs[time_diffs > pd.Timedelta(hours=1)]
     
     if gaps.empty:
-        print("  ✓ No gaps in hourly sequence")
+        print("  [OK] No gaps in hourly sequence")
     else:
-        print(f"  ✗ Found {len(gaps)} gaps!")
+        print(f"  [FAIL] Found {len(gaps)} gaps!")
         return False
     
     # Test 2c: All in UTC
     print("\n2c. Checking timezone...")
     assert hour_index['timestamp'].iloc[0].tz == pytz.UTC, "Timestamps not in UTC"
-    print("  ✓ All timestamps in UTC")
+    print("  [OK] All timestamps in UTC")
     
     # Test 2d: Exactly hourly
     print("\n2d. Checking hourly frequency...")
     # All differences (except first NaT) should be exactly 1 hour
     diffs = time_diffs.dropna()
     assert all(diffs == pd.Timedelta(hours=1)), "Not all intervals are exactly 1 hour"
-    print("  ✓ All intervals exactly 1 hour")
+    print("  [OK] All intervals exactly 1 hour")
     
-    print("\n✅ TEST 2 PASSED: create_hour_index works correctly\n")
+    print("\n[OK] TEST 2 PASSED: create_hour_index works correctly\n")
     return True
 
 
@@ -144,24 +144,24 @@ def test_add_time_features():
     print("\n3b. Checking expected features...")
     for feature in expected_features:
         if feature in df_with_features.columns:
-            print(f"  ✓ {feature}")
+            print(f"  [OK] {feature}")
         else:
-            print(f"  ✗ {feature} MISSING!")
+            print(f"  [FAIL] {feature} MISSING!")
             return False
     
     # Test 3c: Validate hour values
     print("\n3c. Validating feature values...")
     assert df_with_features['hour'].min() == 0, "Hour min should be 0"
     assert df_with_features['hour'].max() == 23, "Hour max should be 23"
-    print(f"  ✓ Hours range from 0 to 23")
+    print(f"  [OK] Hours range from 0 to 23")
     
     # Test 3d: Validate month
     assert df_with_features['month'].iloc[0] == 6, "Month should be June (6)"
-    print(f"  ✓ Month is correct (June = 6)")
+    print(f"  [OK] Month is correct (June = 6)")
     
     # Test 3e: Validate year
     assert df_with_features['year'].iloc[0] == 2022, "Year should be 2022"
-    print(f"  ✓ Year is correct (2022)")
+    print(f"  [OK] Year is correct (2022)")
     
     # Test 3f: Validate weekend detection
     # June 15, 2022 was a Wednesday (not weekend)
@@ -175,14 +175,14 @@ def test_add_time_features():
     if len(wednesday_rows) > 0:
         wednesday = wednesday_rows['is_weekend'].iloc[0]
         assert wednesday == False, "Wednesday incorrectly marked as weekend"
-        print(f"  ✓ Wednesday correctly marked as not weekend")
+        print(f"  [OK] Wednesday correctly marked as not weekend")
 
     if len(saturday_rows) > 0:
         saturday = saturday_rows['is_weekend'].iloc[0]
         assert saturday == True, "Saturday not marked as weekend"
-        print(f"  ✓ Saturday correctly marked as weekend")
+        print(f"  [OK] Saturday correctly marked as weekend")
     else:
-        print(f"  ⚠ Saturday not in test data (test range too short)")
+        print(f"  [WARN] Saturday not in test data (test range too short)")
     
     # Test 3g: Validate Iberian Exception indicator
     iberian_hours = df_with_features['is_iberian_exception'].sum()
@@ -191,9 +191,9 @@ def test_add_time_features():
     
     # June 15, 2022 is AFTER start (June 15), so should be True
     assert iberian_hours == 48, "All test hours should be in Iberian Exception period"
-    print(f"  ✓ Iberian Exception period detected correctly")
+    print(f"  [OK] Iberian Exception period detected correctly")
     
-    print("\n✅ TEST 3 PASSED: add_time_features works correctly\n")
+    print("\n[OK] TEST 3 PASSED: add_time_features works correctly\n")
     return True
 
 
@@ -214,7 +214,7 @@ def test_handle_dst_transitions():
     df_result = handle_dst_transitions(df_normal)
     
     assert len(df_result) == 24, "Normal data should be unchanged"
-    print("  ✓ Normal data passes through unchanged")
+    print("  [OK] Normal data passes through unchanged")
     
     # Test 4b: Duplicate timestamps
     print("\n4b. Testing duplicate timestamp handling...")
@@ -228,7 +228,7 @@ def test_handle_dst_transitions():
     
     # Should remove one duplicate
     assert len(df_result) == 3, f"Should remove duplicates, got {len(df_result)} rows"
-    print(f"  ✓ Duplicates removed (4 rows → 3 rows)")
+    print(f"  [OK] Duplicates removed (4 rows -> 3 rows)")
     
     # Test 4c: Data with gaps
     print("\n4c. Testing gap detection...")
@@ -241,9 +241,9 @@ def test_handle_dst_transitions():
     df_result = handle_dst_transitions(df_gap)
     
     # Should detect and log the gap (check console output)
-    print("  ✓ Gap detection runs (check for warning above)")
+    print("  [OK] Gap detection runs (check for warning above)")
     
-    print("\n✅ TEST 4 PASSED: handle_dst_transitions works correctly\n")
+    print("\n[OK] TEST 4 PASSED: handle_dst_transitions works correctly\n")
     return True
 
 
@@ -259,25 +259,25 @@ def run_all_timezone_tests():
     try:
         results.append(("normalize_to_utc", test_normalize_to_utc()))
     except Exception as e:
-        print(f"❌ normalize_to_utc FAILED: {e}")
+        print(f"[ERROR] normalize_to_utc FAILED: {e}")
         results.append(("normalize_to_utc", False))
     
     try:
         results.append(("create_hour_index", test_create_hour_index()))
     except Exception as e:
-        print(f"❌ create_hour_index FAILED: {e}")
+        print(f"[ERROR] create_hour_index FAILED: {e}")
         results.append(("create_hour_index", False))
     
     try:
         results.append(("add_time_features", test_add_time_features()))
     except Exception as e:
-        print(f"❌ add_time_features FAILED: {e}")
+        print(f"[ERROR] add_time_features FAILED: {e}")
         results.append(("add_time_features", False))
     
     try:
         results.append(("handle_dst_transitions", test_handle_dst_transitions()))
     except Exception as e:
-        print(f"❌ handle_dst_transitions FAILED: {e}")
+        print(f"[ERROR] handle_dst_transitions FAILED: {e}")
         results.append(("handle_dst_transitions", False))
     
     # Summary
@@ -286,7 +286,7 @@ def run_all_timezone_tests():
     print("="*60)
     
     for name, passed in results:
-        status = "✅ PASS" if passed else "❌ FAIL"
+        status = "[OK] PASS" if passed else "[ERROR] FAIL"
         print(f"  {status}: {name}")
     
     total = len(results)
@@ -295,9 +295,9 @@ def run_all_timezone_tests():
     print(f"\nTotal: {passed}/{total} tests passed")
     
     if passed == total:
-        print("\n🎉 ALL TIMEZONE TESTS PASSED!")
+        print("\n ALL TIMEZONE TESTS PASSED!")
     else:
-        print(f"\n⚠️  {total - passed} test(s) failed")
+        print(f"\n[WARN]  {total - passed} test(s) failed")
     
     return passed == total
 

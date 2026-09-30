@@ -26,7 +26,7 @@ def test_database_insert():
             'timestamp': pd.date_range('2022-06-15', periods=24, freq='h', tz='UTC'),
             'country': ['ES'] * 24,
             'price_eur_mwh': [100 + i*5 for i in range(24)],
-            'energy_mwh': [25000 + i*100 for i in range(24)]  # ← Added this column
+            'energy_mwh': [25000 + i*100 for i in range(24)]  # <- Added this column
         })
         
         print(f"  Creating sample data: {len(sample_data)} rows")
@@ -51,8 +51,8 @@ def test_database_insert():
             LIMIT 5
         """).fetchdf()
         
-        print(f"  ✓ Inserted {len(sample_data)} rows")
-        print(f"  ✓ Queried back {len(result)} rows")
+        print(f"  [OK] Inserted {len(sample_data)} rows")
+        print(f"  [OK] Queried back {len(result)} rows")
         print(f"\n  Sample query result:")
         print(result)
         
@@ -61,20 +61,20 @@ def test_database_insert():
         assert 'timestamp' in result.columns, "Missing timestamp column"
         assert 'price_eur_mwh' in result.columns, "Missing price column"
         
-        print(f"\n  ✓ Data integrity checks passed")
+        print(f"\n  [OK] Data integrity checks passed")
         
         # Clean up test data
         conn.execute("DELETE FROM prices_day_ahead WHERE country = 'ES'")
         conn.commit()
-        print(f"  ✓ Cleaned up test data")
+        print(f"  [OK] Cleaned up test data")
         
         conn.close()
         
-        print("\n✅ Database loading test passed!")
+        print("\n[OK] Database loading test passed!")
         return True
         
     except Exception as e:
-        print(f"\n❌ Database loading failed: {e}")
+        print(f"\n[ERROR] Database loading failed: {e}")
         import traceback
         traceback.print_exc()
         return False

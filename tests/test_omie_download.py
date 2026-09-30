@@ -36,9 +36,9 @@ def test_omie_prices_download():
         hour_cols = [col for col in df.columns if col.startswith('H') and col[1:].isdigit()]
         assert len(hour_cols) >= 24, f"Expected 24 hour columns, got {len(hour_cols)}"
         
-        print(f"  ✓ Downloaded {len(df)} rows (concepts)")
-        print(f"  ✓ Found {len(hour_cols)} hour columns: {hour_cols[:5]}...{hour_cols[-2:]}")
-        print(f"  ✓ Columns: {list(df.columns)}")
+        print(f"  [OK] Downloaded {len(df)} rows (concepts)")
+        print(f"  [OK] Found {len(hour_cols)} hour columns: {hour_cols[:5]}...{hour_cols[-2:]}")
+        print(f"  [OK] Columns: {list(df.columns)}")
         
         print(f"\nFirst few rows:")
         print(df.head())
@@ -47,7 +47,7 @@ def test_omie_prices_download():
         spain_prices = df[df['CONCEPT'] == 'PRICE_SP']
         
         if not spain_prices.empty:
-            print(f"\n✅ Spanish prices found!")
+            print(f"\n[OK] Spanish prices found!")
             
             # Get prices from hour columns (H1-H24)
             price_cols = [col for col in spain_prices.columns if col.startswith('H') and len(col) <= 3]
@@ -74,16 +74,16 @@ def test_omie_prices_download():
         # Check Portuguese prices too
         portugal_prices = df[df['CONCEPT'] == 'PRICE_PT']
         if not portugal_prices.empty:
-            print(f"\n  ✓ Portuguese prices also found")
+            print(f"\n  [OK] Portuguese prices also found")
             
             # Check if Spain and Portugal prices are the same (market coupling)
             pt_prices = portugal_prices[price_cols].iloc[0].dropna()
             if prices.equals(pt_prices):
-                print(f"  ✓ Spain and Portugal prices are identical (market coupled)")
+                print(f"  [OK] Spain and Portugal prices are identical (market coupled)")
             else:
-                print(f"  ℹ Spain and Portugal prices differ (market splitting occurred)")
+                print(f"  [INFO] Spain and Portugal prices differ (market splitting occurred)")
         
-        print("\n✅ OMIE download test passed!")
+        print("\n[OK] OMIE download test passed!")
         print("\nData structure explanation:")
         print("  - Each row is a 'CONCEPT' (PRICE_SP, PRICE_PT, ENER_IB, etc.)")
         print("  - Each column H1-H24 represents one hour of the day")
@@ -93,7 +93,7 @@ def test_omie_prices_download():
         return True
         
     except Exception as e:
-        print(f"\n❌ OMIE download test failed: {e}")
+        print(f"\n[ERROR] OMIE download test failed: {e}")
         import traceback
         traceback.print_exc()
         return False

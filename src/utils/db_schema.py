@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_SQL = """
 -- Day-ahead electricity prices
 CREATE TABLE IF NOT EXISTS prices_day_ahead (
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     country VARCHAR(2) NOT NULL,
     price_eur_mwh DOUBLE NOT NULL,
     energy_mwh DOUBLE,
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS prices_day_ahead (
 
 -- Generation by technology and country
 CREATE TABLE IF NOT EXISTS generation (
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     country VARCHAR(2) NOT NULL,
     technology VARCHAR(50) NOT NULL,
     generation_mw DOUBLE NOT NULL,
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS generation (
 
 -- Cross-border electricity flows
 CREATE TABLE IF NOT EXISTS cross_border_flows (
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     country_from VARCHAR(2) NOT NULL,
     country_to VARCHAR(2) NOT NULL,
     flow_mw DOUBLE NOT NULL,
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS cross_border_flows (
 
 -- Weather data by location
 CREATE TABLE IF NOT EXISTS weather (
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     location VARCHAR(50) NOT NULL,
     latitude DOUBLE NOT NULL,
     longitude DOUBLE NOT NULL,
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS weather (
 
 -- Bid curves (if available)
 CREATE TABLE IF NOT EXISTS bid_curves (
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     country VARCHAR(2) NOT NULL,
     generator_id VARCHAR(100),
     price_eur_mwh DOUBLE NOT NULL,
@@ -81,18 +81,66 @@ CREATE INDEX IF NOT EXISTS idx_bids_country ON bid_curves(country);
 """
 
 
+TABLES = ['prices_day_ahead', 'generation', 'cross_border_flows', 'weather', 'bid_curves']
+
+
+def migrate_naive_timestamps(conn) -> list:
+    """
+    Upgrade tables created by the old schema (timezone-naive TIMESTAMP).
+
+    DuckDB cannot retype a primary-key column in place, so each outdated
+    table is copied to `<table>_legacy_naive`, dropped, and recreated by
+    create_schema(). The legacy copy keeps the old rows untouched (their
+    labels are Europe/Lisbon wall time, see manual D-01) and is dropped
+    straight away if it is empty. Every table except bid_curves is
+    rebuilt from data/raw by load_to_db, so nothing is lost.
+
+    Returns:
+        list of migrated table names
+    """
+    outdated = conn.execute("""
+        SELECT table_name
+        FROM information_schema.columns
+        WHERE column_name = 'timestamp'
+          AND data_type = 'TIMESTAMP'
+          AND table_schema = 'main'
+          AND table_name NOT LIKE '%_legacy_naive'
+    """).fetchall()
+    migrated = []
+    for (table,) in outdated:
+        if table not in TABLES:
+            continue
+        legacy = f"{table}_legacy_naive"
+        n_rows = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        conn.execute(f"DROP TABLE IF EXISTS {legacy}")
+        if n_rows:
+            conn.execute(f"CREATE TABLE {legacy} AS SELECT * FROM {table}")
+            logger.warning(f"  {table}: timezone-naive schema, {n_rows:,} old rows kept in {legacy}")
+        else:
+            logger.info(f"  {table}: timezone-naive schema (empty), recreating")
+        conn.execute(f"DROP TABLE {table}")
+        migrated.append(table)
+    return migrated
+
+
 def create_schema():
     """
     Create all tables and indexes in the database.
-    
+
     Run this once after setting up the project, or anytime you want to
-    rebuild the database from scratch.
+    rebuild the database from scratch. Tables left over from the old
+    timezone-naive schema are migrated first (see migrate_naive_timestamps).
     """
     logger.info("Creating database schema...")
-    
+
     try:
         conn = get_connection(readonly=False)
-        
+
+        migrated = migrate_naive_timestamps(conn)
+        if migrated:
+            logger.warning(f"  Migrated to TIMESTAMPTZ: {migrated} -- reload with "
+                           "`python -m src.data.load_to_db`")
+
         # Execute schema SQL (split by semicolon for multiple statements)
         for statement in SCHEMA_SQL.split(';'):
             statement = statement.strip()
@@ -134,7 +182,7 @@ def describe_schema():
         
         print(f"\n{table}:")
         print(f"  Rows: {info['count'].iloc[0]:,}")
-        print(f"  Columns:")
+        print("  Columns:")
         for _, col in columns.iterrows():
             print(f"    - {col['column_name']}: {col['column_type']}")
     

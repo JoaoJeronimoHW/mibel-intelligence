@@ -33,24 +33,24 @@ def test_structure():
     for dir_path in required_dirs:
         path = Path(dir_path)
         if path.exists():
-            print(f"  ✓ {dir_path}")
+            print(f"  [OK] {dir_path}")
         else:
-            print(f"  ✗ {dir_path} - MISSING!")
+            print(f"  [FAIL] {dir_path} - MISSING!")
             all_good = False
     
     # Check files
     for file_path in required_files:
         path = Path(file_path)
         if path.exists():
-            print(f"  ✓ {file_path}")
+            print(f"  [OK] {file_path}")
         else:
-            print(f"  ✗ {file_path} - MISSING!")
+            print(f"  [FAIL] {file_path} - MISSING!")
             all_good = False
     
     if all_good:
-        print("\n✅ Project structure is correct!")
+        print("\n[OK] Project structure is correct!")
     else:
-        print("\n❌ Some files/directories are missing. Check setup commands.")
+        print("\n[ERROR] Some files/directories are missing. Check setup commands.")
     
     return all_good
 

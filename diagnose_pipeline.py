@@ -25,7 +25,7 @@ def section(title):
 
 def check(description, condition, details=""):
     """Print a check result."""
-    status = "✅ PASS" if condition else "❌ FAIL"
+    status = "[OK] PASS" if condition else "[ERROR] FAIL"
     print(f"{status}: {description}")
     if details:
         print(f"     {details}")
@@ -197,7 +197,7 @@ try:
     conn.close()
     
 except Exception as e:
-    print(f"❌ Error checking schema: {e}")
+    print(f"[ERROR] Error checking schema: {e}")
 
 # ============================================================================
 # 6. DATABASE DATA
@@ -233,6 +233,27 @@ try:
             # Check data types
             sample = execute_query("SELECT * FROM prices_day_ahead LIMIT 1")
             print(f"     Column types: {dict(sample.dtypes)}")
+
+            # Timestamps must be stored as instants, not session-local wall time (D-01)
+            ts_types = execute_query("""
+                SELECT table_name, data_type FROM information_schema.columns
+                WHERE column_name = 'timestamp' AND table_schema = 'main'
+                  AND table_name NOT LIKE '%_legacy_naive'
+            """)
+            naive = ts_types[ts_types['data_type'] != 'TIMESTAMP WITH TIME ZONE']
+            check("All timestamp columns are TIMESTAMPTZ (UTC instants)", naive.empty,
+                  "naive: " + ", ".join(naive['table_name']) if not naive.empty else "")
+
+            # One row per country per hour, no gaps (spring DST used to leave 4 holes)
+            gaps = execute_query("""
+                SELECT country,
+                       COUNT(*) AS n,
+                       CAST(epoch(MAX(timestamp)) - epoch(MIN(timestamp)) AS BIGINT) / 3600 + 1 AS span
+                FROM prices_day_ahead GROUP BY country
+            """)
+            gappy = gaps[gaps['n'] != gaps['span']]
+            check("Hourly price series are gapless per country", gappy.empty,
+                  gappy.to_string(index=False) if not gappy.empty else "")
             
             # Check for nulls
             null_check = execute_query("""
@@ -255,7 +276,7 @@ try:
         check(f"Weather table has data", False, "No data or table doesn't exist")
     
 except Exception as e:
-    print(f"❌ Error checking data: {e}")
+    print(f"[ERROR] Error checking data: {e}")
 
 # ============================================================================
 # 7. PANEL CONSTRUCTION
@@ -353,23 +374,23 @@ issues = []
 
 # Check for common issues
 if not structure_ok:
-    issues.append("❌ Project structure incomplete - missing directories or files")
+    issues.append("[ERROR] Project structure incomplete - missing directories or files")
 
 if not env_ok:
-    issues.append("❌ Python packages missing - run: pip install -r requirements.txt")
+    issues.append("[ERROR] Python packages missing - run: pip install -r requirements.txt")
 
 try:
     price_count = execute_query("SELECT COUNT(*) as count FROM prices_day_ahead")
     if price_count['count'].iloc[0] == 0:
-        issues.append("❌ Database is empty - need to load data")
+        issues.append("[ERROR] Database is empty - need to load data")
 except:
-    issues.append("❌ Cannot query database - schema may not be created")
+    issues.append("[ERROR] Cannot query database - schema may not be created")
 
 if not (raw_dir / 'omie').exists() or len(list((raw_dir / 'omie').glob("*.parquet"))) == 0:
-    issues.append("❌ No OMIE data downloaded")
+    issues.append("[ERROR] No OMIE data downloaded")
 
 if len(issues) == 0:
-    print("✅ No critical issues found! Pipeline appears healthy.")
+    print("[OK] No critical issues found! Pipeline appears healthy.")
 else:
     for issue in issues:
         print(issue)

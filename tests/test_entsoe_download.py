@@ -22,14 +22,14 @@ def test_entsoe_prices():
     # Check API key exists
     api_key = os.getenv('ENTSOE_API_KEY')
     if not api_key:
-        print("\n❌ ENTSOE_API_KEY not found!")
+        print("\n[ERROR] ENTSOE_API_KEY not found!")
         print("\nSetup instructions:")
         print("  1. Register at https://transparency.entsoe.eu")
         print("  2. Email transparency@entsoe.eu for API access")
         print("  3. Create .env file with: ENTSOE_API_KEY=your_key")
         return False
     
-    print(f"  ✓ API key found (starts with: {api_key[:8]}...)")
+    print(f"  [OK] API key found (starts with: {api_key[:8]}...)")
     
     # Try multiple countries and date ranges to find data
     test_cases = [
@@ -51,12 +51,12 @@ def test_entsoe_prices():
             )
             
             if df.empty:
-                print(f"    ⚠ No data for {country_name}")
+                print(f"    [WARN] No data for {country_name}")
                 continue
             
             # We got data!
-            print(f"    ✅ Success! Downloaded {len(df)} hourly records")
-            print(f"    ✓ Columns: {list(df.columns)}")
+            print(f"    [OK] Success! Downloaded {len(df)} hourly records")
+            print(f"    [OK] Columns: {list(df.columns)}")
             print(f"\n    Sample data:")
             print(df.head(3))
             
@@ -73,24 +73,24 @@ def test_entsoe_prices():
                 
                 # Sanity check
                 if min_price < -500 or max_price > 5000:
-                    print(f"    ⚠ Warning: Unusual price range")
+                    print(f"    [WARN] Warning: Unusual price range")
             
             success = True
             break  # Found working data, no need to try other countries
             
         except Exception as e:
-            print(f"    ✗ Error: {e}")
+            print(f"    [FAIL] Error: {e}")
             continue
     
     if success:
-        print("\n✅ ENTSO-E download test passed!")
+        print("\n[OK] ENTSO-E download test passed!")
         print("\nWhat this means:")
-        print("  ✓ Your API key is valid and working")
-        print("  ✓ You can download data from ENTSO-E")
-        print("  ✓ Ready to proceed with full data download")
+        print("  [OK] Your API key is valid and working")
+        print("  [OK] You can download data from ENTSO-E")
+        print("  [OK] Ready to proceed with full data download")
         return True
     else:
-        print("\n⚠️  Could not download data from any test case")
+        print("\n[WARN]  Could not download data from any test case")
         print("\nPossible reasons:")
         print("  1. API key might not be fully activated (can take 24-48 hours)")
         print("  2. ENTSO-E server might be temporarily down")
